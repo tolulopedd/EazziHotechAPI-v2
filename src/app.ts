@@ -6,6 +6,10 @@ import morgan from "morgan";
 import { tenantMiddleware } from "./middleware/tenant.middleware";
 import { errorMiddleware } from "./middleware/error.middleware";
 import { healthRoutes } from "./modules/health/health.routes";
+import { authRoutes } from "./modules/auth/auth.routes";
+import { hotelRoutes } from "./modules/hotels/hotel.routes";
+
+
 
 export function createApp() {
   const app = express();
@@ -16,9 +20,18 @@ export function createApp() {
   app.use(morgan("dev"));
 
 
+
   app.use(tenantMiddleware);
 
+ 
+
   app.use("/api", healthRoutes);
+  app.use("/api", authRoutes);
+  app.use("/api", hotelRoutes);
+
+
+  app.use((_req, res) => res.status(404).json({ error: { code: "NOT_FOUND", message: "Route not found" } }));
+
 
   app.use(errorMiddleware);
 

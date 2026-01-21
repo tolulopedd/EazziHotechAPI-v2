@@ -41,7 +41,8 @@ model User {
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
-  @@unique([tenantId, email])
+@@unique([tenantId, email], name: "tenantId_email")
+
   @@index([tenantId])
 }
 
