@@ -18,6 +18,22 @@ enum UserRole {
   STAFF
 }
 
+enum PropertyType {
+  HOTEL
+  SHORTLET
+}
+
+enum UnitType {
+  ROOM
+  APARTMENT
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -26,8 +42,10 @@ model Tenant {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  users     User[]
-  hotels    Hotel[]
+  users      User[]
+  properties Property[]
+  units      Unit[]
+  bookings   Booking[]
 }
 
 model User {
@@ -41,20 +59,64 @@ model User {
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
-@@unique([tenantId, email], name: "tenantId_email")
-
+  @@unique([tenantId, email], name: "tenantId_email")
   @@index([tenantId])
 }
 
-model Hotel {
-  id        String   @id @default(uuid())
+model Property {
+  id        String       @id @default(uuid())
   tenantId  String
+  type      PropertyType @default(HOTEL)
   name      String
   address   String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  units  Unit[]
+
+  @@index([tenantId])
+  @@map("Hotel")
+}
+
+model Unit {
+  id         String   @id @default(uuid())
+  tenantId   String
+  propertyId String
+  type       UnitType
+  name       String // e.g. "Room 101" or "2BR Apartment"
+  capacity   Int      @default(1)
+  basePrice  Decimal? @db.Decimal(12, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  property Property  @relation(fields: [propertyId], references: [id])
+  bookings Booking[]
+
+  @@index([tenantId])
+  @@index([propertyId])
+}
+
+model Booking {
+  id       String        @id @default(uuid())
+  tenantId String
+  unitId   String
+  status   BookingStatus @default(PENDING)
+
+  checkIn  DateTime
+  checkOut DateTime
+
+  guestName  String?
+  guestEmail String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
+  unit   Unit   @relation(fields: [unitId], references: [id])
 
   @@index([tenantId])
+  @@index([unitId])
 }
