@@ -8,6 +8,8 @@ import { errorMiddleware } from "./middleware/error.middleware";
 import { healthRoutes } from "./modules/health/health.routes";
 import { authRoutes } from "./modules/auth/auth.routes";
 import { hotelRoutes } from "./modules/hotels/hotel.routes";
+import { propertyRoutes } from "./modules/properties/property.routes";
+
 
 
 
@@ -28,6 +30,8 @@ export function createApp() {
   app.use("/api", healthRoutes);
   app.use("/api", authRoutes);
   app.use("/api", hotelRoutes);
+  app.use("/api", propertyRoutes);
+
 
 
   app.use((_req, res) => res.status(404).json({ error: { code: "NOT_FOUND", message: "Route not found" } }));
