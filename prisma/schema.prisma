@@ -34,6 +34,52 @@ enum BookingStatus {
   CANCELLED
 }
 
+enum PaymentMethod {
+  MANUAL
+  PAYSTACK
+  STRIPE
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  REFUNDED
+}
+
+enum BookingPaymentStatus {
+  UNPAID
+  PARTPAID
+  PAID
+  REFUNDED
+}
+
+enum BookingStayStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+  NO_SHOW
+}
+
+enum CheckEventType {
+  CHECK_IN
+  CHECK_OUT
+}
+
+enum VerificationMode {
+  MANUAL_REVIEW
+  FACE_MATCH
+}
+
+enum VerificationResult {
+  PENDING
+  PASSED
+  FAILED
+}
+
+
 model Tenant {
   id        String       @id @default(uuid())
   name      String
@@ -46,6 +92,11 @@ model Tenant {
   properties Property[]
   units      Unit[]
   bookings   Booking[]
+payments    Payment[]
+checkEvents CheckEvent[]
+settings TenantSettings?
+
+
 }
 
 model User {
@@ -100,16 +151,21 @@ model Unit {
 }
 
 model Booking {
-  id       String        @id @default(uuid())
-  tenantId String
-  unitId   String
-  status   BookingStatus @default(PENDING)
+  id        String              @id @default(uuid())
+  tenantId  String
+  unitId    String
 
-  checkIn  DateTime
-  checkOut DateTime
+  status        BookingStayStatus     @default(PENDING)
+  paymentStatus BookingPaymentStatus  @default(UNPAID)
+
+  checkIn   DateTime
+  checkOut  DateTime
 
   guestName  String?
   guestEmail String?
+  guestPhone String?
+  totalAmount Decimal? @db.Decimal(12,2)
+  currency    String   @default("NGN")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -117,6 +173,77 @@ model Booking {
   tenant Tenant @relation(fields: [tenantId], references: [id])
   unit   Unit   @relation(fields: [unitId], references: [id])
 
+  payments   Payment[]
+  checkEvents CheckEvent[]
+
   @@index([tenantId])
   @@index([unitId])
 }
+
+model Payment {
+  id        String        @id @default(uuid())
+  tenantId  String
+  bookingId String
+
+  method    PaymentMethod @default(MANUAL)
+  status    PaymentStatus @default(PENDING)
+
+  amount    Decimal       @db.Decimal(12, 2)
+  currency  String        @default("NGN")
+  reference String?
+  notes     String?
+
+  paidAt       DateTime?
+  confirmedAt  DateTime?
+  confirmedByUserId String?
+
+  meta      Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@index([tenantId])
+  @@index([bookingId])
+}
+
+model CheckEvent {
+  id        String            @id @default(uuid())
+  tenantId  String
+  bookingId String
+
+  type      CheckEventType
+  capturedAt DateTime         @default(now())
+  capturedByUserId String?
+
+  photoUrl  String?
+  idDocUrl  String?
+
+  verificationMode   VerificationMode   @default(MANUAL_REVIEW)
+  verificationResult VerificationResult @default(PENDING)
+  notes     String?
+
+  createdAt DateTime @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@index([tenantId])
+  @@index([bookingId])
+}
+
+model TenantSettings {
+  id                 String   @id @default(uuid())
+  tenantId            String   @unique
+
+  // Example: 30 means "minimum 30% deposit to allow check-in"
+  minDepositPercent   Int      @default(100)
+
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+}
+
