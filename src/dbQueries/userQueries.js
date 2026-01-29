@@ -20,14 +20,20 @@ const createUser = async (user) => {
   return result.rows[0];
 };
 
-// Query to find a user by email
 const findUserByEmail = async (email) => {
   const query = "SELECT * FROM users WHERE email = $1";
   const result = await pool.query(query, [email]);
   return result.rows[0];
 };
 
+const updateUserPasswordById = async (id, passwordHash) => {
+  const query = "UPDATE users SET password = $1 WHERE id = $2 RETURNING *";
+  const result = await pool.query(query, [passwordHash, id]);
+  return result.rows[0];
+};
+
 module.exports = {
   createUser,
   findUserByEmail,
+  updateUserPasswordById,
 };

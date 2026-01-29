@@ -16,6 +16,9 @@ app.use(bodyParser.json());
 // Import routes
 //import userRoutes from "../routes/userRoutes";
 app.use("/api/users", userRoutes);
+// src/server.ts or routes index
+app.use("/api", meRoutes);
+
 
 app.use("*", (req, res, next) => {
   res.status(409).json({
