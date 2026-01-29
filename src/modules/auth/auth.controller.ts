@@ -1,60 +1,123 @@
-import type { Request, Response } from "express";
-import { asyncHandler } from "../../common/utils/asyncHandler";
-import { registerSchema, loginSchema } from "./auth.schema";
-import * as service from "./auth.service";
+import type { Request, Response, NextFunction } from "express";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import { prisma } from "../../prisma/client";
 import { AppError } from "../../common/errors/AppError";
-import { prisma } from "../../prisma/client"; // raw prisma (NOT tenant prisma)
 
-export const register = asyncHandler(async (req: Request, res: Response) => {
-  // keep register tenant-scoped for now (requires x-tenant-id)
-  if (!req.tenantId) {
-    throw new AppError("Tenant missing on request", 500, "TENANT_CONTEXT_MISSING");
+type UserRole = "ADMIN" | "MANAGER" | "STAFF";
+
+function signAccessToken(payload: { userId: string; tenantId: string; role: UserRole }) {
+  return jwt.sign(payload, process.env.JWT_ACCESS_SECRET!, { expiresIn: "1h" });
+}
+
+export async function register(req: Request, res: Response, next: NextFunction) {
+  try {
+    const tenantId = (req as any).tenantId as string | undefined;
+    if (!tenantId) throw new AppError("Tenant missing on request", 400, "TENANT_CONTEXT_MISSING");
+
+    const { email, password, role, fullName, phone } = req.body as {
+      email?: string;
+      password?: string;
+      role?: UserRole;
+      fullName?: string;
+      phone?: string;
+    };
+
+    if (!email || !password || !role) {
+      throw new AppError("email, password and role are required", 400, "VALIDATION_ERROR");
+    }
+
+    if (!["ADMIN", "MANAGER", "STAFF"].includes(role)) {
+      throw new AppError("Invalid role", 400, "VALIDATION_ERROR");
+    }
+
+    const existing = await prisma.user.findUnique({
+      where: { tenantId_email: { tenantId, email } },
+      select: { id: true },
+    });
+
+    if (existing) throw new AppError("Email already registered", 409, "EMAIL_EXISTS");
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const user = await prisma.user.create({
+      data: {
+        tenantId,
+        email,
+        passwordHash,
+        role,
+        fullName: fullName?.trim() || null,
+        phone: phone?.trim() || null,
+      },
+      select: {
+        id: true,
+        tenantId: true,
+        email: true,
+        role: true,
+        fullName: true,
+        phone: true,
+        createdAt: true,
+      },
+    });
+
+    const accessToken = signAccessToken({ userId: user.id, tenantId: user.tenantId, role: user.role });
+
+    return res.status(201).json({
+      user,
+      accessToken,
+      tenantId: user.tenantId,
+      role: user.role,
+    });
+  } catch (err) {
+    next(err);
   }
+}
 
-  const data = registerSchema.parse(req.body);
-  const result = await service.register(req.tenantId, data);
+export async function login(req: Request, res: Response, next: NextFunction) {
+  try {
+    const tenantId = (req as any).tenantId as string | undefined;
+    if (!tenantId) throw new AppError("Tenant missing on request", 400, "TENANT_CONTEXT_MISSING");
 
-  res.status(201).json(result);
-});
+    const { email, password } = req.body as { email?: string; password?: string };
+    if (!email || !password) throw new AppError("email and password are required", 400, "VALIDATION_ERROR");
 
-export const login = asyncHandler(async (req: Request, res: Response) => {
-  // ✅ login no longer requires req.tenantId
-  // We'll resolve tenant from body (tenantSlug or tenantId)
+    const user = await prisma.user.findUnique({
+      where: { tenantId_email: { tenantId, email } },
+      select: {
+        id: true,
+        tenantId: true,
+        role: true,
+        passwordHash: true,
+        email: true,
+        fullName: true,
+        // status: true, // ✅ uncomment only if you added status to Prisma
+      },
+    });
 
-  const data = loginSchema.parse(req.body);
+   if (!user) {
+  throw new AppError("Invalid email or password", 401, "INVALID_CREDENTIALS");
+}
 
-  // Expect loginSchema to include tenantSlug OR tenantId
-  const tenant =
-    data.tenantId
-      ? await prisma.tenant.findFirst({
-          where: { id: data.tenantId, status: "ACTIVE" },
-          select: { id: true },
-        })
-      : await prisma.tenant.findFirst({
-          where: { slug: data.tenantSlug, status: "ACTIVE" },
-          select: { id: true },
-        });
+if (user.status === "DISABLED") {
+  throw new AppError("Account is disabled", 403, "ACCOUNT_DISABLED");
+}
 
-  if (!tenant) {
-    throw new AppError("Invalid tenant", 401, "TENANT_INVALID");
+
+    // ✅ If you added user.status, enable this:
+    // if ((user as any).status === "DISABLED") throw new AppError("Account disabled", 403, "ACCOUNT_DISABLED");
+
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (!ok) throw new AppError("Invalid email or password", 401, "INVALID_CREDENTIALS");
+
+    const accessToken = signAccessToken({ userId: user.id, tenantId: user.tenantId, role: user.role });
+
+    return res.json({
+      accessToken,
+      tenantId: user.tenantId,
+      role: user.role,
+      user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role },
+    });
+  } catch (err) {
+    next(err);
   }
-
-  const result = await service.login(tenant.id, data);
-  res.json(result);
-});
-
-export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
-  // expects { tenantId? , tenantSlug?, email }
-  const { tenantId, tenantSlug, email } = req.body;
-  if (!email) throw new AppError("Email is required", 400);
-  await service.sendResetLink({ tenantId, tenantSlug, email });
-  res.json({ message: "If the email exists, a reset link has been sent" });
-});
-
-export const resetPassword = asyncHandler(async (req: Request, res: Response) => {
-  // expects { token, newPassword }
-  const { token, newPassword } = req.body;
-  if (!token || !newPassword) throw new AppError("Token and newPassword are required", 400);
-  await service.resetPassword(token, newPassword);
-  res.json({ message: "Password has been reset successfully" });
-});
+}

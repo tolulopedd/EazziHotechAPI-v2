@@ -14,6 +14,10 @@ import { unitRoutes } from "./modules/units/unit.routes";
 import { bookingRoutes } from "./modules/bookings/booking.routes";
 import { paymentRoutes } from "./modules/payments/payment.routes";
 import { checkRoutes } from "./modules/check/check.routes";
+import {dashboardRoutes} from "./modules/dashboard/dashboard.routes";
+import { usersRoutes } from "./modules/users/users.routes";
+import { tenantRoutes } from "./modules/tenant/tenant.routes";
+
 
 // ✅ NEW: public routes (tenant discovery)
 import { publicRoutes } from "./modules/public/public.routes";
@@ -26,6 +30,7 @@ export function createApp() {
   app.use(express.json());
   app.use(morgan("dev"));
 
+
   /**
    * ✅ Public endpoints (NO tenant header required)
    * - Tenant discovery/selection
@@ -34,11 +39,14 @@ export function createApp() {
   app.use("/api/public", publicRoutes);
   app.use("/api", authRoutes);
 
-  /**
-   * ✅ Tenant-protected endpoints (tenant header required)
-   * Everything below this line requires x-tenant-id
-   */
-  app.use(tenantMiddleware);
+    app.use(tenantMiddleware);
+
+   app.use("/api", dashboardRoutes);
+   app.use("/api", usersRoutes);
+   app.use("/api", tenantRoutes);
+   
+
+
 
   app.use("/api", healthRoutes);
   app.use("/api", hotelRoutes);
@@ -47,6 +55,7 @@ export function createApp() {
   app.use("/api", bookingRoutes);
   app.use("/api", paymentRoutes);
   app.use("/api", checkRoutes);
+ 
 
   app.use((_req, res) =>
     res.status(404).json({

@@ -62,14 +62,115 @@ export const listBookings = asyncHandler(async (req: Request, res: Response) => 
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
 
-  const { unitId, status } = req.query;
+  const {
+    unitId,
+    status,
+    paymentStatus,
+    from,
+    to,
+    q,
+    limit = "50",
+    cursor,
+  } = req.query as Record<string, string | undefined>;
+
+  const take = Math.min(parseInt(limit, 10) || 50, 200);
+
+  const where: any = {
+    ...(unitId ? { unitId } : {}),
+    ...(status ? { status } : {}),
+    ...(paymentStatus ? { paymentStatus } : {}),
+  };
+
+  // Date filtering (check-in range)
+  if (from || to) {
+    where.checkIn = {
+      ...(from ? { gte: toDate(from, "from") } : {}),
+      ...(to ? { lte: toDate(to, "to") } : {}),
+    };
+  }
+
+  // Simple search on guest details
+  if (q?.trim()) {
+    where.OR = [
+      { guestName: { contains: q.trim(), mode: "insensitive" } },
+      { guestEmail: { contains: q.trim(), mode: "insensitive" } },
+    ];
+  }
 
   const bookings = await db.booking.findMany({
-    where: {
-      ...(unitId ? { unitId: String(unitId) } : {}),
-      ...(status ? { status: String(status) as any } : {}),
-    },
+    where,
     orderBy: { createdAt: "desc" },
+    take,
+    ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+  });
+
+  res.json({ bookings });
+});
+
+export const arrivalsToday = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date();
+  end.setHours(23, 59, 59, 999);
+
+  const bookings = await db.raw.booking.findMany({
+    where: {
+      tenantId,
+      status: "CONFIRMED",
+      checkIn: { gte: start, lte: end },
+    },
+    include: {
+      unit: {
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          property: { select: { name: true } },
+        },
+      },
+    },
+    orderBy: { checkIn: "asc" },
+  });
+
+  res.json({ bookings });
+});
+
+export const inHouse = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+
+  const search = String(req.query.search || "").trim();
+
+  const bookings = await db.raw.booking.findMany({
+    where: {
+      tenantId,
+      status: "CHECKED_IN",
+      ...(search
+        ? {
+            OR: [
+              { guestName: { contains: search, mode: "insensitive" } },
+              { guestPhone: { contains: search, mode: "insensitive" } },
+              { guestEmail: { contains: search, mode: "insensitive" } },
+              { unit: { name: { contains: search, mode: "insensitive" } } },
+              { unit: { property: { name: { contains: search, mode: "insensitive" } } } },
+            ],
+          }
+        : {}),
+    },
+    include: {
+      unit: {
+        select: {
+          name: true,
+          type: true,
+          property: { select: { name: true } },
+        },
+      },
+    },
+    orderBy: { checkedInAt: "desc" },
   });
 
   res.json({ bookings });

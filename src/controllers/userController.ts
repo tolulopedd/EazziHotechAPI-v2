@@ -37,9 +37,10 @@ const loginUser = catchAsync(async (req, res) => {
   const { email, password } = req.body;
 
   const user = await findUserByEmail(email);
-  if (!user || !user.is_active) {
-    return res.status(401).json({ message: "Invalid email or password" });
-  }
+ if (!user || user.is_active === false || user.status === "DISABLED") {
+  return res.status(401).json({ message: "Invalid email or non active or disabled user" });
+}
+
 
   const isMatch = await bcrypt.compare(password, user.password);
   if (!isMatch) {

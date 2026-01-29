@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createManualPayment, confirmPayment } from "./payment.controller";
+import { createManualPayment, confirmPayment, listPayments } from "./payment.controller";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requireRole } from "../../middleware/role.middleware";
 
@@ -17,4 +17,11 @@ paymentRoutes.post(
   requireAuth,
   requireRole("ADMIN", "MANAGER"),
   confirmPayment
+);
+
+paymentRoutes.get(
+  "/payments",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER"),
+  listPayments
 );
