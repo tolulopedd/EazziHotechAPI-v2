@@ -12,6 +12,7 @@ export const listPayments = asyncHandler(async (req: Request, res: Response) => 
   const q = req.query.q ? String(req.query.q).trim() : undefined;
 
   const where: any = {
+     tenantId, // ✅ add this
     ...(status ? { status } : {}),
     ...(bookingId ? { bookingId } : {}),
     ...(q

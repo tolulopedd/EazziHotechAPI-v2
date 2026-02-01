@@ -70,3 +70,21 @@ export const listUnitsByProperty = asyncHandler(async (req: Request, res: Respon
 
   res.json({ units });
 });
+
+export const listUnits = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+
+  // Optional filters
+  const propertyId = req.query.propertyId ? String(req.query.propertyId) : undefined;
+
+  const units = await db.raw.unit.findMany({
+    where: {
+      tenantId,
+      ...(propertyId ? { propertyId } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  res.json({ units });
+});
