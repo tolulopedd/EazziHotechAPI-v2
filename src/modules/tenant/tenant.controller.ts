@@ -1,6 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
+import bcrypt from "bcryptjs";
 import { prisma } from "../../prisma/client";
 import { AppError } from "../../common/errors/AppError";
+import { isSuperAdminEmail } from "../../common/auth/superadmin";
 
 type Role = "ADMIN" | "MANAGER" | "STAFF";
 type JwtUser = { userId: string; tenantId: string; role: Role };
@@ -18,11 +20,23 @@ function getTenantId(req: Request): string {
 }
 
 function safeTenant(t: any) {
+  const daysToExpiry = t.currentPeriodEndAt
+    ? Math.ceil((new Date(t.currentPeriodEndAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+    : null;
+
   return {
     id: t.id,
     name: t.name,
     slug: t.slug,
     status: t.status,
+    subscriptionStatus: t.subscriptionStatus,
+    currentPeriodEndAt: t.currentPeriodEndAt,
+    graceEndsAt: t.graceEndsAt,
+    lastReminderSentAt: t.lastReminderSentAt,
+    lastSuspensionNoticeAt: t.lastSuspensionNoticeAt,
+    lastReactivationNoticeAt: t.lastReactivationNoticeAt,
+    daysToExpiry,
+    expiringSoon: typeof daysToExpiry === "number" && daysToExpiry >= 0 && daysToExpiry <= 3,
     email: t.email,
     phone: t.phone,
     address: t.address,
@@ -40,6 +54,205 @@ function safeSettings(s: any) {
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
   };
+}
+
+function parseOptionalDate(value: string | null | undefined, field: string) {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    throw new AppError(`${field} must be a valid ISO datetime`, 400, "VALIDATION_ERROR");
+  }
+  return d;
+}
+
+function validateSubscriptionDates(
+  subscriptionStatus: "ACTIVE" | "GRACE" | "SUSPENDED",
+  currentEndDate: Date | null | undefined,
+  graceEndDate: Date | null | undefined
+) {
+  if (currentEndDate && graceEndDate && graceEndDate.getTime() < currentEndDate.getTime()) {
+    throw new AppError("graceEndsAt cannot be before currentPeriodEndAt", 400, "VALIDATION_ERROR");
+  }
+  if (subscriptionStatus === "GRACE" && !graceEndDate) {
+    throw new AppError("graceEndsAt is required when subscriptionStatus is GRACE", 400, "VALIDATION_ERROR");
+  }
+}
+
+function normalizeOptionalString(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const next = String(value).trim();
+  return next ? next : null;
+}
+
+async function requireSuperAdmin(req: Request) {
+  const actor = getActor(req);
+  const actorUser = await prisma.user.findFirst({
+    where: { id: actor.userId, tenantId: actor.tenantId },
+    select: { email: true },
+  });
+  if (!actorUser) throw new AppError("Authentication required", 401, "UNAUTHORIZED");
+  if (!isSuperAdminEmail(actorUser.email)) {
+    throw new AppError("Super admin access required", 403, "SUPERADMIN_REQUIRED");
+  }
+}
+
+/**
+ * POST /api/platform/tenants
+ * ✅ SUPERADMIN only: create tenant + settings + first ADMIN user in one transaction
+ */
+export async function createPlatformTenant(req: Request, res: Response, next: NextFunction) {
+  try {
+    await requireSuperAdmin(req);
+
+    const {
+      name,
+      slug,
+      email,
+      phone,
+      address,
+      subscriptionStatus,
+      currentPeriodEndAt,
+      graceEndsAt,
+      settings,
+      adminUser,
+    } = req.body as {
+      name?: string;
+      slug?: string;
+      email?: string | null;
+      phone?: string | null;
+      address?: string | null;
+      subscriptionStatus?: "ACTIVE" | "GRACE" | "SUSPENDED";
+      currentPeriodEndAt?: string | null;
+      graceEndsAt?: string | null;
+      settings?: {
+        minDepositPercent?: number;
+        maxProperties?: number;
+        maxUnits?: number;
+        maxUsers?: number;
+      };
+      adminUser?: {
+        email?: string;
+        password?: string;
+        fullName?: string | null;
+        phone?: string | null;
+      };
+    };
+
+    if (!name?.trim()) throw new AppError("name is required", 400, "VALIDATION_ERROR");
+    if (!slug?.trim()) throw new AppError("slug is required", 400, "VALIDATION_ERROR");
+    if (!adminUser?.email?.trim()) throw new AppError("adminUser.email is required", 400, "VALIDATION_ERROR");
+    if (!adminUser?.password || adminUser.password.length < 8) {
+      throw new AppError("adminUser.password must be at least 8 characters", 400, "VALIDATION_ERROR");
+    }
+
+    const normalizedSubscriptionStatus = subscriptionStatus ?? "ACTIVE";
+    if (!["ACTIVE", "GRACE", "SUSPENDED"].includes(normalizedSubscriptionStatus)) {
+      throw new AppError("subscriptionStatus must be ACTIVE, GRACE, or SUSPENDED", 400, "VALIDATION_ERROR");
+    }
+
+    const normalizedSlug = slug.trim().toLowerCase();
+    const normalizedAdminEmail = adminUser.email.trim().toLowerCase();
+    const currentEndDate = parseOptionalDate(currentPeriodEndAt, "currentPeriodEndAt");
+    const graceEndDate = parseOptionalDate(graceEndsAt, "graceEndsAt");
+    validateSubscriptionDates(normalizedSubscriptionStatus, currentEndDate, graceEndDate);
+
+    const numericSettings = {
+      minDepositPercent: settings?.minDepositPercent,
+      maxProperties: settings?.maxProperties,
+      maxUnits: settings?.maxUnits,
+      maxUsers: settings?.maxUsers,
+    };
+    if (
+      numericSettings.minDepositPercent !== undefined &&
+      (!Number.isInteger(numericSettings.minDepositPercent) ||
+        numericSettings.minDepositPercent < 0 ||
+        numericSettings.minDepositPercent > 100)
+    ) {
+      throw new AppError("settings.minDepositPercent must be an integer between 0 and 100", 400, "VALIDATION_ERROR");
+    }
+    if (
+      numericSettings.maxProperties !== undefined &&
+      (!Number.isInteger(numericSettings.maxProperties) || numericSettings.maxProperties < 1)
+    ) {
+      throw new AppError("settings.maxProperties must be an integer >= 1", 400, "VALIDATION_ERROR");
+    }
+    if (numericSettings.maxUnits !== undefined && (!Number.isInteger(numericSettings.maxUnits) || numericSettings.maxUnits < 1)) {
+      throw new AppError("settings.maxUnits must be an integer >= 1", 400, "VALIDATION_ERROR");
+    }
+    if (numericSettings.maxUsers !== undefined && (!Number.isInteger(numericSettings.maxUsers) || numericSettings.maxUsers < 1)) {
+      throw new AppError("settings.maxUsers must be an integer >= 1", 400, "VALIDATION_ERROR");
+    }
+
+    const existingTenant = await prisma.tenant.findFirst({
+      where: { slug: normalizedSlug },
+      select: { id: true },
+    });
+    if (existingTenant) throw new AppError("Workspace slug already taken", 409, "SLUG_TAKEN");
+
+    const passwordHash = await bcrypt.hash(adminUser.password, 10);
+    const nextTenantStatus = normalizedSubscriptionStatus === "SUSPENDED" ? "SUSPENDED" : "ACTIVE";
+
+    const created = await prisma.$transaction(async (tx) => {
+      const tenant = await tx.tenant.create({
+        data: {
+          name: name.trim(),
+          slug: normalizedSlug,
+          email: normalizeOptionalString(email),
+          phone: normalizeOptionalString(phone),
+          address: normalizeOptionalString(address),
+          status: nextTenantStatus,
+          subscriptionStatus: normalizedSubscriptionStatus,
+          ...(currentEndDate !== undefined ? { currentPeriodEndAt: currentEndDate } : {}),
+          ...(graceEndDate !== undefined ? { graceEndsAt: graceEndDate } : {}),
+          ...(normalizedSubscriptionStatus === "SUSPENDED" ? { lastSuspensionNoticeAt: new Date() } : {}),
+        },
+      });
+
+      const tenantSettings = await tx.tenantSettings.create({
+        data: {
+          tenantId: tenant.id,
+          ...(numericSettings.minDepositPercent !== undefined
+            ? { minDepositPercent: numericSettings.minDepositPercent }
+            : {}),
+          ...(numericSettings.maxProperties !== undefined ? { maxProperties: numericSettings.maxProperties } : {}),
+          ...(numericSettings.maxUnits !== undefined ? { maxUnits: numericSettings.maxUnits } : {}),
+          ...(numericSettings.maxUsers !== undefined ? { maxUsers: numericSettings.maxUsers } : {}),
+        },
+      });
+
+      const firstAdmin = await tx.user.create({
+        data: {
+          tenantId: tenant.id,
+          email: normalizedAdminEmail,
+          passwordHash,
+          role: "ADMIN",
+          status: "ACTIVE",
+          fullName: normalizeOptionalString(adminUser.fullName),
+          phone: normalizeOptionalString(adminUser.phone),
+        },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          status: true,
+          fullName: true,
+          phone: true,
+          createdAt: true,
+        },
+      });
+
+      return { tenant, tenantSettings, firstAdmin };
+    });
+
+    return res.status(201).json({
+      tenant: safeTenant(created.tenant),
+      settings: safeSettings(created.tenantSettings),
+      firstAdmin: created.firstAdmin,
+    });
+  } catch (err) {
+    next(err);
+  }
 }
 
 /**
@@ -126,6 +339,173 @@ export async function updateMyTenant(req: Request, res: Response, next: NextFunc
       tenant: safeTenant(updated),
       settings: safeSettings(settings),
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/tenant/subscription
+ * ✅ SUPERADMIN only: manual phase-1 subscription controls
+ */
+export async function updateMyTenantSubscription(req: Request, res: Response, next: NextFunction) {
+  try {
+    await requireSuperAdmin(req);
+
+    const tenantId = getTenantId(req);
+
+    const {
+      subscriptionStatus,
+      currentPeriodEndAt,
+      graceEndsAt,
+    } = req.body as {
+      subscriptionStatus?: "ACTIVE" | "GRACE" | "SUSPENDED";
+      currentPeriodEndAt?: string | null;
+      graceEndsAt?: string | null;
+    };
+
+    if (!subscriptionStatus || !["ACTIVE", "GRACE", "SUSPENDED"].includes(subscriptionStatus)) {
+      throw new AppError("subscriptionStatus must be ACTIVE, GRACE, or SUSPENDED", 400, "VALIDATION_ERROR");
+    }
+
+    const currentEndDate = parseOptionalDate(currentPeriodEndAt, "currentPeriodEndAt");
+    const graceEndDate = parseOptionalDate(graceEndsAt, "graceEndsAt");
+    validateSubscriptionDates(subscriptionStatus, currentEndDate, graceEndDate);
+
+    const before = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true, status: true, subscriptionStatus: true },
+    });
+    if (!before) throw new AppError("Tenant not found", 404, "NOT_FOUND");
+
+    const nextTenantStatus = subscriptionStatus === "SUSPENDED" ? "SUSPENDED" : "ACTIVE";
+
+    const updated = await prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        status: nextTenantStatus,
+        subscriptionStatus,
+        ...(currentEndDate !== undefined ? { currentPeriodEndAt: currentEndDate } : {}),
+        ...(graceEndDate !== undefined ? { graceEndsAt: graceEndDate } : {}),
+        ...(subscriptionStatus === "SUSPENDED" ? { lastSuspensionNoticeAt: new Date() } : {}),
+        ...(before.subscriptionStatus === "SUSPENDED" && subscriptionStatus !== "SUSPENDED"
+          ? { lastReactivationNoticeAt: new Date() }
+          : {}),
+      },
+      include: { settings: true },
+    });
+
+    let settings = updated.settings;
+    if (!settings) {
+      settings = await prisma.tenantSettings.create({ data: { tenantId } });
+    }
+
+    return res.json({
+      tenant: safeTenant(updated),
+      settings: safeSettings(settings),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/platform/tenants?search=&page=&pageSize=
+ * ✅ SUPERADMIN only: list all tenants across platform
+ */
+export async function listPlatformTenants(req: Request, res: Response, next: NextFunction) {
+  try {
+    await requireSuperAdmin(req);
+
+    const search = (req.query.search as string | undefined)?.trim();
+    const page = Math.max(parseInt((req.query.page as string) || "1", 10), 1);
+    const pageSize = Math.min(Math.max(parseInt((req.query.pageSize as string) || "100", 10), 1), 200);
+    const skip = (page - 1) * pageSize;
+
+    const where = search
+      ? {
+          OR: [
+            { name: { contains: search, mode: "insensitive" as const } },
+            { slug: { contains: search, mode: "insensitive" as const } },
+            { email: { contains: search, mode: "insensitive" as const } },
+          ],
+        }
+      : {};
+
+    const [total, tenants] = await Promise.all([
+      prisma.tenant.count({ where }),
+      prisma.tenant.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: pageSize,
+      }),
+    ]);
+
+    return res.json({
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      tenants: tenants.map(safeTenant),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/platform/tenants/:tenantId/subscription
+ * ✅ SUPERADMIN only: update subscription for any tenant
+ */
+export async function updatePlatformTenantSubscription(req: Request, res: Response, next: NextFunction) {
+  try {
+    await requireSuperAdmin(req);
+
+    const tenantId = String(req.params.tenantId || "").trim();
+    if (!tenantId) throw new AppError("tenantId is required", 400, "VALIDATION_ERROR");
+
+    const {
+      subscriptionStatus,
+      currentPeriodEndAt,
+      graceEndsAt,
+    } = req.body as {
+      subscriptionStatus?: "ACTIVE" | "GRACE" | "SUSPENDED";
+      currentPeriodEndAt?: string | null;
+      graceEndsAt?: string | null;
+    };
+
+    if (!subscriptionStatus || !["ACTIVE", "GRACE", "SUSPENDED"].includes(subscriptionStatus)) {
+      throw new AppError("subscriptionStatus must be ACTIVE, GRACE, or SUSPENDED", 400, "VALIDATION_ERROR");
+    }
+
+    const currentEndDate = parseOptionalDate(currentPeriodEndAt, "currentPeriodEndAt");
+    const graceEndDate = parseOptionalDate(graceEndsAt, "graceEndsAt");
+    validateSubscriptionDates(subscriptionStatus, currentEndDate, graceEndDate);
+
+    const before = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { id: true, status: true, subscriptionStatus: true },
+    });
+    if (!before) throw new AppError("Tenant not found", 404, "NOT_FOUND");
+
+    const nextTenantStatus = subscriptionStatus === "SUSPENDED" ? "SUSPENDED" : "ACTIVE";
+
+    const updated = await prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        status: nextTenantStatus,
+        subscriptionStatus,
+        ...(currentEndDate !== undefined ? { currentPeriodEndAt: currentEndDate } : {}),
+        ...(graceEndDate !== undefined ? { graceEndsAt: graceEndDate } : {}),
+        ...(subscriptionStatus === "SUSPENDED" ? { lastSuspensionNoticeAt: new Date() } : {}),
+        ...(before.subscriptionStatus === "SUSPENDED" && subscriptionStatus !== "SUSPENDED"
+          ? { lastReactivationNoticeAt: new Date() }
+          : {}),
+      },
+    });
+
+    return res.json({ tenant: safeTenant(updated) });
   } catch (err) {
     next(err);
   }

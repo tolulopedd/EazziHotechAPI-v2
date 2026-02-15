@@ -3,6 +3,9 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { prisma } from "../../prisma/client";
 import { AppError } from "../../common/errors/AppError";
+import { isSuperAdminEmail } from "../../common/auth/superadmin";
+import { passwordPolicyErrors } from "../../common/auth/passwordPolicy";
+import { resetPassword, sendResetLink } from "./auth.service";
 
 type UserRole = "ADMIN" | "MANAGER" | "STAFF";
 
@@ -29,6 +32,11 @@ export async function register(req: Request, res: Response, next: NextFunction) 
 
     if (!["ADMIN", "MANAGER", "STAFF"].includes(role)) {
       throw new AppError("Invalid role", 400, "VALIDATION_ERROR");
+    }
+
+    const policy = passwordPolicyErrors(password);
+    if (policy.length > 0) {
+      throw new AppError(`Password must include ${policy.join(", ")}`, 400, "WEAK_PASSWORD");
     }
 
     const existing = await prisma.user.findUnique({
@@ -77,6 +85,9 @@ export async function login(req: Request, res: Response, next: NextFunction) {
   try {
     const tenantId = (req as any).tenantId as string | undefined;
     if (!tenantId) throw new AppError("Tenant missing on request", 400, "TENANT_CONTEXT_MISSING");
+    const subscription = (req as any).tenantSubscription as
+      | { subscriptionStatus: string; currentPeriodEndAt?: Date | null; daysToExpiry?: number | null }
+      | undefined;
 
     const { email, password } = req.body as { email?: string; password?: string };
     if (!email || !password) throw new AppError("email and password are required", 400, "VALIDATION_ERROR");
@@ -90,17 +101,17 @@ export async function login(req: Request, res: Response, next: NextFunction) {
         passwordHash: true,
         email: true,
         fullName: true,
-        // status: true, // ✅ uncomment only if you added status to Prisma
+        status: true,
       },
     });
 
-   if (!user) {
-  throw new AppError("Invalid email or password", 401, "INVALID_CREDENTIALS");
-}
+    if (!user) {
+      throw new AppError("Invalid email or password", 401, "INVALID_CREDENTIALS");
+    }
 
-if (user.status === "DISABLED") {
-  throw new AppError("Account is disabled", 403, "ACCOUNT_DISABLED");
-}
+    if (user.status === "DISABLED") {
+      throw new AppError("Account is disabled", 403, "ACCOUNT_DISABLED");
+    }
 
 
     // ✅ If you added user.status, enable this:
@@ -110,13 +121,58 @@ if (user.status === "DISABLED") {
     if (!ok) throw new AppError("Invalid email or password", 401, "INVALID_CREDENTIALS");
 
     const accessToken = signAccessToken({ userId: user.id, tenantId: user.tenantId, role: user.role });
+    const isSuperAdmin = isSuperAdminEmail(user.email);
+
+    const daysToExpiry = subscription?.daysToExpiry ?? null;
+    const expiringSoon = typeof daysToExpiry === "number" && daysToExpiry >= 0 && daysToExpiry <= 3;
 
     return res.json({
       accessToken,
       tenantId: user.tenantId,
       role: user.role,
+      isSuperAdmin,
       user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role },
+      subscription: {
+        status: subscription?.subscriptionStatus ?? "ACTIVE",
+        currentPeriodEndAt: subscription?.currentPeriodEndAt ?? null,
+        daysToExpiry,
+        expiringSoon,
+      },
     });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function forgotPassword(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { tenantSlug, tenantId, email } = req.body as {
+      tenantSlug?: string;
+      tenantId?: string;
+      email?: string;
+    };
+    if (!email) throw new AppError("email is required", 400, "VALIDATION_ERROR");
+
+    await sendResetLink({
+      tenantSlug: tenantSlug?.trim() || undefined,
+      tenantId: tenantId?.trim() || undefined,
+      email: email.trim().toLowerCase(),
+    });
+
+    return res.json({ message: "If the email exists, a reset link has been sent." });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function resetPasswordWithToken(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { token, newPassword } = req.body as { token?: string; newPassword?: string };
+    if (!token || !newPassword) {
+      throw new AppError("token and newPassword are required", 400, "VALIDATION_ERROR");
+    }
+    await resetPassword(token, newPassword);
+    return res.json({ message: "Password reset successfully" });
   } catch (err) {
     next(err);
   }

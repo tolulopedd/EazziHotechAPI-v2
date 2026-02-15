@@ -2,6 +2,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { prisma } from "../../prisma/client";
 import { AppError } from "../../common/errors/AppError";
+import { passwordPolicyErrors } from "../../common/auth/passwordPolicy";
+import { sendPasswordResetEmail } from "../../common/notifications/email";
 
 type Tokens = { accessToken: string; refreshToken: string };
 
@@ -62,19 +64,47 @@ export async function login(tenantId: string, input: { email: string; password: 
 // New: forgot/reset password helpers
 export async function sendResetLink(input: { tenantId?: string; tenantSlug?: string; email: string }) {
   const { tenantId, tenantSlug, email } = input;
+  const normalizedEmail = email.trim().toLowerCase();
+  let user:
+    | {
+        id: string;
+        tenantId: string;
+        email: string;
+      }
+    | null = null;
 
-  const tenant =
-    tenantId
-      ? await prisma.tenant.findFirst({ where: { id: tenantId, status: "ACTIVE" }, select: { id: true } })
-      : await prisma.tenant.findFirst({ where: { slug: tenantSlug, status: "ACTIVE" }, select: { id: true } });
+  if (tenantId || tenantSlug) {
+    const tenant = tenantId
+      ? await prisma.tenant.findFirst({
+          where: { id: tenantId, status: "ACTIVE" },
+          select: { id: true },
+        })
+      : await prisma.tenant.findFirst({
+          where: { slug: tenantSlug, status: "ACTIVE" },
+          select: { id: true },
+        });
 
-  if (!tenant) return; // silence to avoid enumeration
+    if (!tenant) return; // silence to avoid enumeration
 
-  const user = await prisma.user.findUnique({
-    where: { tenantId_email: { tenantId: tenant.id, email } },
-  });
+    user = await prisma.user.findFirst({
+      where: {
+        tenantId: tenant.id,
+        email: { equals: normalizedEmail, mode: "insensitive" },
+      },
+      select: { id: true, tenantId: true, email: true },
+    });
+  } else {
+    // Workspace not selected: resolve by email across active tenants.
+    user = await prisma.user.findFirst({
+      where: {
+        email: { equals: normalizedEmail, mode: "insensitive" },
+        tenant: { status: "ACTIVE" },
+      },
+      select: { id: true, tenantId: true, email: true },
+    });
+  }
 
-  if (!user) return;
+  if (!user) return; // silence to avoid enumeration
 
   const secret = process.env.JWT_RESET_SECRET || process.env.JWT_ACCESS_SECRET!;
   const expiresIn = process.env.JWT_RESET_EXPIRES_IN || "1h";
@@ -85,14 +115,30 @@ export async function sendResetLink(input: { tenantId?: string; tenantSlug?: str
     { expiresIn }
   );
 
-  const frontend = process.env.FRONTEND_URL || "http://localhost:3000";
-  const resetLink = `${frontend}/reset-password?token=${resetToken}`;
+  const frontend = process.env.FRONTEND_URL || "http://localhost:5173";
+  const resetLink = `${frontend}/reset-password?token=${encodeURIComponent(resetToken)}&email=${encodeURIComponent(
+    user.email
+  )}`;
 
-  // TODO: replace with real mailer (nodemailer) in production
-  console.log(`Password reset link for ${email}: ${resetLink}`);
+  try {
+    await sendPasswordResetEmail({
+      to: user.email,
+      resetLink,
+      tenantName: tenantSlug || undefined,
+    });
+  } catch (err) {
+    // Keep forgot-password response generic and non-enumerating.
+    // Log provider issues for ops without returning 500 to the client.
+    console.error("[auth] Failed to send password reset email", err);
+  }
 }
 
 export async function resetPassword(token: string, newPassword: string) {
+  const policy = passwordPolicyErrors(newPassword);
+  if (policy.length > 0) {
+    throw new AppError(`Password must include ${policy.join(", ")}`, 400, "WEAK_PASSWORD");
+  }
+
   const secret = process.env.JWT_RESET_SECRET || process.env.JWT_ACCESS_SECRET!;
   let payload: any;
   try {

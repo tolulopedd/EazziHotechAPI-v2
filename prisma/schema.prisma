@@ -12,6 +12,12 @@ enum TenantStatus {
   SUSPENDED
 }
 
+enum SubscriptionStatus {
+  ACTIVE
+  GRACE
+  SUSPENDED
+}
+
 enum UserRole {
   ADMIN
   MANAGER
@@ -22,7 +28,6 @@ enum UserStatus {
   ACTIVE
   DISABLED
 }
-
 
 enum PropertyType {
   HOTEL
@@ -87,14 +92,40 @@ enum VerificationResult {
   FAILED
 }
 
+/** ✅ NEW: charges for checkout blocking + damage/outstanding */
+enum ChargeType {
+  ROOM
+  DAMAGE
+  EXTRA
+  PENALTY
+  DISCOUNT
+}
+
+enum ChargeStatus {
+  OPEN
+  VOID
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  WON
+  LOST
+}
 
 model Tenant {
   id        String       @id @default(uuid())
   name      String
   slug      String       @unique
   status    TenantStatus @default(ACTIVE)
+  subscriptionStatus       SubscriptionStatus @default(ACTIVE)
+  currentPeriodEndAt       DateTime?
+  graceEndsAt              DateTime?
+  lastReminderSentAt       DateTime?
+  lastSuspensionNoticeAt   DateTime?
+  lastReactivationNoticeAt DateTime?
 
-  // ✅ optional contact info
   email     String?
   phone     String?
   address   String?
@@ -102,18 +133,20 @@ model Tenant {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  users      User[]
-  properties Property[]
-  units      Unit[]
-  bookings   Booking[]
-  payments   Payment[]
+  users       User[]
+  properties  Property[]
+  units       Unit[]
+  bookings    Booking[]
+  payments    Payment[]
   checkEvents CheckEvent[]
+  settings    TenantSettings?
 
-  settings   TenantSettings?
+  /** ✅ NEW relations */
+  guests      Guest[]
+  charges     BookingCharge[]
 
   @@index([slug])
 }
-
 
 model User {
   id           String   @id @default(uuid())
@@ -124,7 +157,7 @@ model User {
   passwordHash String
   role         UserRole @default(STAFF)
 
-  status       UserStatus @default(ACTIVE) // ✅ NEW
+  status       UserStatus @default(ACTIVE)
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -133,10 +166,8 @@ model User {
 
   @@unique([tenantId, email], name: "tenantId_email")
   @@index([tenantId])
-  @@index([tenantId, status]) // ✅ optional, helpful
+  @@index([tenantId, status])
 }
-
-
 
 model Property {
   id        String       @id @default(uuid())
@@ -159,7 +190,7 @@ model Unit {
   tenantId   String
   propertyId String
   type       UnitType
-  name       String // e.g. "Room 101" or "2BR Apartment"
+  name       String
   capacity   Int      @default(1)
   basePrice  Decimal? @db.Decimal(12, 2)
 
@@ -175,37 +206,56 @@ model Unit {
 }
 
 model Booking {
-  id        String              @id @default(uuid())
+  id        String  @id @default(uuid())
   tenantId  String
   unitId    String
+
+  /** ✅ NEW: link to Guest master record */
+  guestId   String?
+  guest     Guest?  @relation(fields: [guestId], references: [id])
 
   status        BookingStayStatus     @default(PENDING)
   paymentStatus BookingPaymentStatus  @default(UNPAID)
 
-  // planned dates
   checkIn   DateTime
   checkOut  DateTime
 
-  // ✅ actual timestamps
-  checkedInAt  DateTime?
-  checkedOutAt DateTime?
+  checkedInAt   DateTime?
+  checkedOutAt  DateTime?
   checkInNotes  String?
+  earlyCheckout Boolean @default(false)
+  earlyCheckoutAt DateTime?
+  refundPolicy String?
+  refundEligibleAmount Decimal? @db.Decimal(12,2)
+  refundApproved Boolean @default(false)
+  refundAmount Decimal? @db.Decimal(12,2)
+  refundStatus String?
+  refundReason String?
 
-  guestName  String?
-  guestEmail String?
-  guestPhone String?
+  /**
+   * ✅ Keep these as "snapshot" fields for audit/history.
+   * You can gradually stop writing them later if you want, but keep them for now.
+   */
+  guestName        String?
+  guestEmail       String?
+  guestPhone       String?
   guestAddress     String?
   guestNationality String?
-  totalAmount Decimal? @db.Decimal(12,2)
-  currency    String   @default("NGN")
 
-    // identification at check-in
-  idType       String?
-  idNumber     String?
-  idIssuedBy   String?
+  totalAmount      Decimal? @db.Decimal(12,2)
+  currency         String   @default("NGN")
 
-    // optional
+  idType     String?
+  idNumber   String?
+  idIssuedBy String?
+
   vehiclePlate String?
+
+  // ✅ Guest photo (for check-in verification)
+  guestPhotoKey       String?
+  guestPhotoMime      String?
+  guestPhotoSize      Int?
+  guestPhotoUpdatedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -216,11 +266,14 @@ model Booking {
   payments    Payment[]
   checkEvents CheckEvent[]
 
+  /** ✅ NEW: charges for room + damage + extras */
+  charges     BookingCharge[]
+
   @@index([tenantId])
   @@index([unitId])
-  @@index([tenantId, status]) // ✅ helpful for dashboards
+  @@index([tenantId, status])
+  @@index([tenantId, guestId])
 }
-
 
 model Payment {
   id        String        @id @default(uuid())
@@ -235,8 +288,8 @@ model Payment {
   reference String?
   notes     String?
 
-  paidAt       DateTime?
-  confirmedAt  DateTime?
+  paidAt          DateTime?
+  confirmedAt     DateTime?
   confirmedByUserId String?
 
   meta      Json?
@@ -249,6 +302,28 @@ model Payment {
 
   @@index([tenantId])
   @@index([bookingId])
+}
+
+model BookingCharge {
+  id        String   @id @default(uuid())
+  tenantId  String
+  bookingId String
+
+  type      ChargeType
+  title     String
+  amount    Decimal  @db.Decimal(12, 2)
+  currency  String   @default("NGN")
+  status    ChargeStatus @default(OPEN)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id])
+  booking Booking @relation(fields: [bookingId], references: [id])
+
+  @@index([tenantId])
+  @@index([bookingId])
+  @@index([bookingId, type])
 }
 
 model CheckEvent {
@@ -266,6 +341,13 @@ model CheckEvent {
   verificationMode   VerificationMode   @default(MANUAL_REVIEW)
   verificationResult VerificationResult @default(PENDING)
   notes     String?
+  earlyCheckout Boolean @default(false)
+  refundPolicy String?
+  refundEligibleAmount Decimal? @db.Decimal(12,2)
+  refundApproved Boolean @default(false)
+  refundAmount Decimal? @db.Decimal(12,2)
+  refundStatus String?
+  refundReason String?
 
   createdAt DateTime @default(now())
 
@@ -292,3 +374,57 @@ model TenantSettings {
   tenant Tenant @relation(fields: [tenantId], references: [id])
 }
 
+model Guest {
+  id        String   @id @default(uuid())
+  tenantId  String
+
+  fullName  String
+  email     String?
+  phone     String?
+  address   String?
+  nationality String?
+  idType    String?
+  idNumber  String?
+  idIssuedBy String?
+
+  vehiclePlate String?
+
+  photoKey  String?
+  photoMime String?
+  photoSize Int?
+  photoUpdatedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant  @relation(fields: [tenantId], references: [id])
+  bookings Booking[]
+
+  @@index([tenantId])
+  @@index([tenantId, phone])
+  @@index([tenantId, email])
+  @@index([tenantId, idNumber])
+}
+
+model Lead {
+  id          String     @id @default(uuid())
+  companyName String
+  contactName String
+  email       String
+  phone       String?
+  businessType String?
+  message     String?
+  source      String?
+  ip          String?
+  status      LeadStatus @default(NEW)
+  assignedTo  String?
+  notes       String?
+  contactedAt DateTime?
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([email])
+}

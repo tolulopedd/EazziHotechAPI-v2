@@ -28,6 +28,18 @@ function mapBookingStatusToUi(
   return "pending";
 }
 
+function getStartOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function getEndOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+
 export async function getDashboard(req: Request, res: Response, next: NextFunction) {
   try {
     const user = (req as any).user as JwtUser | undefined;
@@ -103,16 +115,49 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
       };
     });
 
-    // STAFF: booking + payment info only
+    // Core operational stats (all roles)
+    const [totalProperties, totalUnits, activeBookings, pendingPaymentsCount] = await Promise.all([
+      prisma.property.count({ where: scope }),
+      prisma.unit.count({ where: scope }),
+      prisma.booking.count({
+        where: { ...scope, status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] } },
+      }),
+      prisma.payment.count({ where: { ...scope, status: "PENDING" } }),
+    ]);
+
+    // Occupancy from active stays today (distinct unitId)
+    const startOfToday = getStartOfDay(now);
+    const endOfToday = getEndOfDay(now);
+
+    const occupiedToday = await prisma.booking.findMany({
+      where: {
+        ...scope,
+        status: { in: ["CONFIRMED", "CHECKED_IN"] },
+        checkIn: { lte: endOfToday },
+        checkOut: { gt: startOfToday },
+      },
+      select: { unitId: true },
+      distinct: ["unitId"],
+    });
+
+    const occupiedUnitsToday = occupiedToday.length;
+
+    // % (1 decimal place)
+    const occupancyRate =
+      totalUnits > 0 ? Math.round((occupiedUnitsToday / totalUnits) * 1000) / 10 : 0;
+
+    // Keep pending safe vs fetched sample list
+    const pendingPaymentsSafe = Math.max(pendingPaymentsCount, pendingPayments.length);
+
+    // STAFF: operational-only stats, hide revenue
     if (user.role === "STAFF") {
-      // Keep stats object so your current Dashboard.tsx doesn't crash
       const stats: DashboardStats = {
-        totalProperties: 0,
-        totalUnits: 0,
-        activeBookings: 0,
-        pendingPayments: pendingPayments.length,
+        totalProperties,
+        totalUnits,
+        activeBookings,
+        pendingPayments: pendingPaymentsSafe,
         totalRevenue: 0,
-        occupancyRate: 0,
+        occupancyRate,
       };
 
       return res.json({
@@ -123,34 +168,45 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
       });
     }
 
-    // MANAGER + ADMIN: stats
-    const [totalProperties, totalUnits, activeBookings, pendingPaymentsCount] = await Promise.all([
-      prisma.property.count({ where: scope }),
-      prisma.unit.count({ where: scope }),
-      prisma.booking.count({
-        where: { ...scope, status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] } },
-      }),
-      prisma.payment.count({ where: { ...scope, status: "PENDING" } }),
-    ]);
+    // MANAGER: operational + finance-lite (no team size)
+    if (user.role === "MANAGER") {
+      const stats: DashboardStats = {
+        totalProperties,
+        totalUnits,
+        activeBookings,
+        pendingPayments: pendingPaymentsSafe,
+        totalRevenue: 0,
+        occupancyRate,
+      };
 
-    const revenueAgg = await prisma.payment.aggregate({
-      where: { ...scope, status: "CONFIRMED" },
-      _sum: { amount: true },
-    });
+      return res.json({
+        userRole: "manager",
+        stats,
+        recentBookings,
+        pendingPayments,
+      });
+    }
+
+    // ADMIN: full visibility
+    const [revenueAgg, staffCount] = await Promise.all([
+      prisma.payment.aggregate({
+        where: { ...scope, status: "CONFIRMED" },
+        _sum: { amount: true },
+      }),
+      prisma.user.count({ where: scope }),
+    ]);
 
     const stats: DashboardStats = {
       totalProperties,
       totalUnits,
       activeBookings,
-      pendingPayments: pendingPaymentsCount,
+      pendingPayments: pendingPaymentsSafe,
       totalRevenue: Number(revenueAgg._sum.amount ?? 0),
-      occupancyRate: 0,
+      occupancyRate,
     };
 
-    const staffCount = await prisma.user.count({ where: scope });
-
     return res.json({
-      userRole: user.role === "ADMIN" ? "admin" : "manager",
+      userRole: "admin",
       stats,
       recentBookings,
       pendingPayments,

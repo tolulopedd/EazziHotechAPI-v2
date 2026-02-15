@@ -1,18 +1,26 @@
+// src/modules/bookings/booking.routes.ts
 import { Router } from "express";
+
 import {
   createBooking,
   listBookings,
   arrivalsToday,
-  arrivalsWeek,     // ✅ NEW
+  arrivalsWeek,
   inHouse,
-  checkInBooking,   // ✅ NEW / UPDATED
-  pendingPayments,
-   recordBookingPayment, 
+  checkInBooking,
+  uploadGuestPhoto,
+  recordBookingPayment,
 } from "./booking.controller";
+
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requireRole } from "../../middleware/role.middleware";
+import { imageUpload } from "../../middleware/image.middleware";
 
 export const bookingRoutes = Router();
+
+/* =========================
+   BOOKINGS
+========================= */
 
 bookingRoutes.post(
   "/bookings",
@@ -28,7 +36,10 @@ bookingRoutes.get(
   listBookings
 );
 
-// ✅ Front desk lists
+/* =========================
+   ARRIVALS & IN-HOUSE
+========================= */
+
 bookingRoutes.get(
   "/bookings/arrivals/today",
   requireAuth,
@@ -36,7 +47,6 @@ bookingRoutes.get(
   arrivalsToday
 );
 
-// ✅ NEW: Arrivals for the week
 bookingRoutes.get(
   "/bookings/arrivals/week",
   requireAuth,
@@ -51,13 +61,34 @@ bookingRoutes.get(
   inHouse
 );
 
-// ✅ NEW: Check-in with extra guest info
+/* =========================
+   CHECK-IN
+========================= */
+
 bookingRoutes.post(
   "/bookings/:id/check-in",
   requireAuth,
   requireRole("ADMIN", "MANAGER", "STAFF"),
   checkInBooking
 );
+
+/**
+ * ✅ Upload guest photo (demo: local disk, prod: S3 later)
+ * Expects multipart/form-data
+ * Field name: "file"
+ * Max size: 300KB
+ */
+bookingRoutes.post(
+  "/bookings/:id/guest-photo",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  imageUpload({ maxSizeKb: 300 }).single("file"),
+  uploadGuestPhoto
+);
+
+/* =========================
+   PAYMENTS (Booking-level)
+========================= */
 
 bookingRoutes.post(
   "/bookings/:id/payments",
@@ -66,10 +97,8 @@ bookingRoutes.post(
   recordBookingPayment
 );
 
-bookingRoutes.get(
-  "/payments/pending",
-  requireAuth,
-  requireRole("ADMIN", "MANAGER", "STAFF"),
-  pendingPayments
-);
-
+/**
+ * ❌ Removed:
+ * bookingRoutes.get("/payments/pending", ..., pendingPayments)
+ * Keep /api/payments/pending ONLY in paymentRoutes to avoid conflicts.
+ */

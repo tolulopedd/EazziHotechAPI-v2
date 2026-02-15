@@ -2,9 +2,11 @@ import type { Request, Response, NextFunction } from "express";
 import bcrypt from "bcrypt";
 import { prisma } from "../../prisma/client";
 import { AppError } from "../../common/errors/AppError";
+import { passwordPolicyErrors } from "../../common/auth/passwordPolicy";
 
 type Role = "ADMIN" | "MANAGER" | "STAFF";
 type JwtUser = { userId: string; tenantId: string; role: Role };
+type UserStatus = "ACTIVE" | "DISABLED";
 
 function getActor(req: Request): JwtUser {
   const u = (req as any).user as JwtUser | undefined;
@@ -30,13 +32,21 @@ function canAssignRole(actorRole: Role, newRole: Role) {
   return false;
 }
 
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 function safeUser(u: any) {
   return {
     id: u.id,
     tenantId: u.tenantId,
     email: u.email,
     role: u.role,
-    // status: u.status, // ✅ include only if you added status field
+    status: u.status,
     fullName: u.fullName,
     phone: u.phone,
     createdAt: u.createdAt,
@@ -49,14 +59,26 @@ function safeUser(u: any) {
  */
 export async function listUsers(req: Request, res: Response, next: NextFunction) {
   try {
-    getActor(req);
+    const actor = getActor(req);
     const tenantId = getTenant(req);
 
     const search = (req.query.search as string | undefined)?.trim();
-    const role = (req.query.role as Role | undefined)?.trim() as Role | undefined;
+    const roleQuery = (req.query.role as string | undefined)?.trim().toUpperCase();
+    const statusQuery = (req.query.status as string | undefined)?.trim().toUpperCase();
+    const role = roleQuery
+      ? (["ADMIN", "MANAGER", "STAFF"].includes(roleQuery) ? (roleQuery as Role) : null)
+      : undefined;
+    const status = statusQuery
+      ? (["ACTIVE", "DISABLED"].includes(statusQuery) ? (statusQuery as UserStatus) : null)
+      : undefined;
 
-    // If you have status in schema, you can use it; otherwise ignore it
-    const status = (req.query.status as "ACTIVE" | "DISABLED" | undefined)?.trim();
+    if (role === null) throw new AppError("Invalid role filter", 400, "VALIDATION_ERROR");
+    if (status === null) throw new AppError("Invalid status filter", 400, "VALIDATION_ERROR");
+    if (actor.role === "MANAGER" && role && role !== "STAFF") {
+      throw new AppError("Managers can only view STAFF users", 403, "FORBIDDEN");
+    }
+
+    const effectiveRole: Role | undefined = actor.role === "MANAGER" ? "STAFF" : role;
 
     const page = Math.max(parseInt((req.query.page as string) || "1", 10), 1);
     const pageSize = Math.min(Math.max(parseInt((req.query.pageSize as string) || "20", 10), 1), 100);
@@ -64,7 +86,7 @@ export async function listUsers(req: Request, res: Response, next: NextFunction)
 
     const where: any = {
       tenantId,
-      ...(role ? { role } : {}),
+      ...(effectiveRole ? { role: effectiveRole } : {}),
       ...(search
         ? {
             OR: [
@@ -73,7 +95,7 @@ export async function listUsers(req: Request, res: Response, next: NextFunction)
             ],
           }
         : {}),
-      // ...(status ? { status } : {}), // ✅ uncomment only if you added status to Prisma
+      ...(status ? { status } : {}),
     };
 
     const [total, users] = await Promise.all([
@@ -88,6 +110,7 @@ export async function listUsers(req: Request, res: Response, next: NextFunction)
           tenantId: true,
           email: true,
           role: true,
+          status: true,
           fullName: true,
           phone: true,
           createdAt: true,
@@ -101,6 +124,7 @@ export async function listUsers(req: Request, res: Response, next: NextFunction)
       page,
       pageSize,
       total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
       users: users.map(safeUser),
     });
   } catch (err) {
@@ -113,7 +137,7 @@ export async function listUsers(req: Request, res: Response, next: NextFunction)
  */
 export async function getUserById(req: Request, res: Response, next: NextFunction) {
   try {
-    getActor(req);
+    const actor = getActor(req);
     const tenantId = getTenant(req);
     const id = req.params.id;
 
@@ -124,6 +148,7 @@ export async function getUserById(req: Request, res: Response, next: NextFunctio
         tenantId: true,
         email: true,
         role: true,
+        status: true,
         fullName: true,
         phone: true,
         createdAt: true,
@@ -133,6 +158,9 @@ export async function getUserById(req: Request, res: Response, next: NextFunctio
     });
 
     if (!user) throw new AppError("User not found", 404, "NOT_FOUND");
+    if (actor.role === "MANAGER" && user.role !== "STAFF") {
+      throw new AppError("Insufficient permissions to view this user", 403, "FORBIDDEN");
+    }
 
     return res.json({ user: safeUser(user) });
   } catch (err) {
@@ -162,24 +190,32 @@ export async function createStaffOrManager(req: Request, res: Response, next: Ne
 
     if (!email || !role) throw new AppError("email and role are required", 400, "VALIDATION_ERROR");
     if (!["ADMIN", "MANAGER", "STAFF"].includes(role)) throw new AppError("Invalid role", 400, "VALIDATION_ERROR");
+    const normalizedEmail = normalizeEmail(email);
+    if (!isValidEmail(normalizedEmail)) throw new AppError("Invalid email format", 400, "VALIDATION_ERROR");
 
     if (!canAssignRole(actor.role, role)) {
       throw new AppError("Insufficient permissions to create this role", 403, "FORBIDDEN");
     }
 
     const existing = await prisma.user.findUnique({
-      where: { tenantId_email: { tenantId, email } },
+      where: { tenantId_email: { tenantId, email: normalizedEmail } },
       select: { id: true },
     });
     if (existing) throw new AppError("Email already registered", 409, "EMAIL_EXISTS");
 
-    const plain = tempPassword?.trim() || "Welcome123!";
+    const plain =
+      tempPassword?.trim() ||
+      `Tmp${Math.random().toString(36).slice(2, 8)}${Date.now().toString().slice(-4)}!`;
+    const policy = passwordPolicyErrors(plain);
+    if (policy.length > 0) {
+      throw new AppError(`Temporary password must include ${policy.join(", ")}`, 400, "WEAK_PASSWORD");
+    }
     const passwordHash = await bcrypt.hash(plain, 10);
 
     const created = await prisma.user.create({
       data: {
         tenantId,
-        email,
+        email: normalizedEmail,
         role,
         fullName: fullName?.trim() || null,
         phone: phone?.trim() || null,
@@ -190,6 +226,7 @@ export async function createStaffOrManager(req: Request, res: Response, next: Ne
         tenantId: true,
         email: true,
         role: true,
+        status: true,
         fullName: true,
         phone: true,
         createdAt: true,
@@ -249,6 +286,7 @@ export async function updateUserById(req: Request, res: Response, next: NextFunc
         tenantId: true,
         email: true,
         role: true,
+        status: true,
         fullName: true,
         phone: true,
         createdAt: true,
@@ -284,6 +322,7 @@ export async function updateMyProfile(req: Request, res: Response, next: NextFun
         tenantId: true,
         email: true,
         role: true,
+        status: true,
         fullName: true,
         phone: true,
         createdAt: true,
@@ -315,6 +354,10 @@ export async function changeMyPassword(req: Request, res: Response, next: NextFu
 
     if (!currentPassword || !newPassword) {
       throw new AppError("currentPassword and newPassword are required", 400, "VALIDATION_ERROR");
+    }
+    const policy = passwordPolicyErrors(newPassword);
+    if (policy.length > 0) {
+      throw new AppError(`Password must include ${policy.join(", ")}`, 400, "WEAK_PASSWORD");
     }
 
     const user = await prisma.user.findFirst({
@@ -365,6 +408,17 @@ export async function disableUser(req: Request, res: Response, next: NextFunctio
     const updated = await prisma.user.update({
       where: { id },
       data: { status: "DISABLED" },
+      select: {
+        id: true,
+        tenantId: true,
+        email: true,
+        role: true,
+        status: true,
+        fullName: true,
+        phone: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
 
     return res.json({ user: safeUser(updated) });
@@ -392,6 +446,17 @@ export async function enableUser(req: Request, res: Response, next: NextFunction
     const updated = await prisma.user.update({
       where: { id },
       data: { status: "ACTIVE" },
+      select: {
+        id: true,
+        tenantId: true,
+        email: true,
+        role: true,
+        status: true,
+        fullName: true,
+        phone: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
 
     return res.json({ user: safeUser(updated) });
