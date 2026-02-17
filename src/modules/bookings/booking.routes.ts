@@ -2,11 +2,13 @@
 import { Router } from "express";
 
 import {
+  confirmGuestPhotoUpload,
   createBooking,
   listBookings,
   arrivalsToday,
   arrivalsWeek,
   inHouse,
+  presignGuestPhotoUpload,
   checkInBooking,
   uploadGuestPhoto,
   recordBookingPayment,
@@ -78,6 +80,20 @@ bookingRoutes.post(
  * Field name: "file"
  * Max size: 300KB
  */
+bookingRoutes.post(
+  "/bookings/:id/guest-photo/presign",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  presignGuestPhotoUpload
+);
+
+bookingRoutes.post(
+  "/bookings/:id/guest-photo/confirm",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  confirmGuestPhotoUpload
+);
+
 bookingRoutes.post(
   "/bookings/:id/guest-photo",
   requireAuth,

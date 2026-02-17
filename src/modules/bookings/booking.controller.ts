@@ -8,6 +8,13 @@ import { AppError } from "../../common/errors/AppError";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { logger } from "../../common/logger/logger";
 import { sendGuestBookingEmail } from "../../common/notifications/email";
+import {
+  createPresignedPutUrl,
+  isS3StorageEnabled,
+  publicUrlFromKey,
+  storageObjectExists,
+  uploadBufferToStorage,
+} from "../../common/storage/object-storage";
 
 /**
  * Helpers
@@ -28,16 +35,11 @@ function safeImageExt(mime: string) {
   return mime === "image/png" ? "png" : "jpg";
 }
 
-/**
- * Demo: local static server exposes /uploads
- * We store keys like: tenants/<tenantId>/bookings/<bookingId>/guest.jpg
- */
-function photoUrlFromKey(photoKey: string | null | undefined) {
-  return photoKey ? `/uploads/${photoKey}` : null;
-}
+const ALLOWED_IMAGE_MIME = new Set(["image/jpeg", "image/jpg", "image/png"]);
+const MAX_GUEST_PHOTO_BYTES = 300 * 1024;
 
 function withGuestPhotoUrl<T extends { guestPhotoKey?: string | null }>(b: T) {
-  return { ...b, guestPhotoUrl: photoUrlFromKey(b.guestPhotoKey) };
+  return { ...b, guestPhotoUrl: publicUrlFromKey(b.guestPhotoKey) };
 }
 
 function normalizeOptionalString(value: unknown) {
@@ -592,18 +594,25 @@ export const uploadGuestPhoto = asyncHandler(async (req: Request, res: Response)
 
   const ext = safeImageExt(file.mimetype);
 
-  // Save to: uploads/tenants/<tenantId>/bookings/<bookingId>/guest.<ext>
-  const uploadRoot = path.join(process.cwd(), "uploads");
+  // Stable key for either S3 or local fallback
   const relativeDir = path.join("tenants", tenantId, "bookings", bookingId);
-  const absoluteDir = path.join(uploadRoot, relativeDir);
-  ensureDir(absoluteDir);
-
   const filename = `guest.${ext}`;
-  const absolutePath = path.join(absoluteDir, filename);
+  const photoKey = path.join(relativeDir, filename).replace(/\\/g, "/");
 
-  fs.writeFileSync(absolutePath, file.buffer);
-
-  const photoKey = path.join(relativeDir, filename).replaceAll("\\", "/");
+  if (isS3StorageEnabled()) {
+    await uploadBufferToStorage({
+      key: photoKey,
+      body: file.buffer,
+      contentType: file.mimetype,
+    });
+  } else {
+    // Local dev fallback: save to uploads/tenants/<tenantId>/bookings/<bookingId>/guest.<ext>
+    const uploadRoot = path.join(process.cwd(), "uploads");
+    const absoluteDir = path.join(uploadRoot, relativeDir);
+    ensureDir(absoluteDir);
+    const absolutePath = path.join(absoluteDir, filename);
+    fs.writeFileSync(absolutePath, file.buffer);
+  }
 
   await db.raw.booking.update({
     where: { id: bookingId },
@@ -618,9 +627,117 @@ export const uploadGuestPhoto = asyncHandler(async (req: Request, res: Response)
 
   res.json({
     photoKey,
-    photoUrl: photoUrlFromKey(photoKey),
+    photoUrl: publicUrlFromKey(photoKey),
     size: file.size,
     mime: file.mimetype,
+  });
+});
+
+export const presignGuestPhotoUpload = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const bookingId = req.params.id;
+  const { contentType, fileSize } = req.body ?? {};
+
+  if (!isS3StorageEnabled()) {
+    throw new AppError("Direct upload is available only when STORAGE_DRIVER=S3", 400, "STORAGE_NOT_CONFIGURED");
+  }
+
+  if (!contentType || typeof contentType !== "string" || !ALLOWED_IMAGE_MIME.has(contentType)) {
+    throw new AppError("contentType must be image/jpeg, image/jpg or image/png", 400, "VALIDATION_ERROR");
+  }
+
+  const parsedSize = Number(fileSize ?? 0);
+  if (Number.isFinite(parsedSize) && parsedSize > 0 && parsedSize > MAX_GUEST_PHOTO_BYTES) {
+    throw new AppError("Photo must be 300KB or less", 400, "FILE_TOO_LARGE");
+  }
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId },
+    select: { id: true },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+
+  const ext = safeImageExt(contentType);
+  const stamp = Date.now();
+  const relativeDir = path.join("tenants", tenantId, "bookings", bookingId);
+  const filename = `guest-${stamp}.${ext}`;
+  const photoKey = path.join(relativeDir, filename).replace(/\\/g, "/");
+
+  const { uploadUrl, expiresIn } = await createPresignedPutUrl({
+    key: photoKey,
+    contentType,
+    expiresInSec: 300,
+  });
+
+  res.json({
+    method: "PUT",
+    uploadUrl,
+    expiresInSeconds: expiresIn,
+    photoKey,
+    photoUrl: publicUrlFromKey(photoKey),
+    requiredHeaders: {
+      "Content-Type": contentType,
+    },
+  });
+});
+
+export const confirmGuestPhotoUpload = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const bookingId = req.params.id;
+  const { photoKey, mime, size } = req.body ?? {};
+
+  if (!photoKey || typeof photoKey !== "string") {
+    throw new AppError("photoKey is required", 400, "VALIDATION_ERROR");
+  }
+
+  const keyPrefix = path.join("tenants", tenantId, "bookings", bookingId).replace(/\\/g, "/");
+  const normalizedKey = photoKey.replace(/\\/g, "/");
+  if (!normalizedKey.startsWith(`${keyPrefix}/`)) {
+    throw new AppError("photoKey is invalid for this tenant/booking", 400, "VALIDATION_ERROR");
+  }
+
+  if (mime !== undefined && mime !== null) {
+    if (typeof mime !== "string" || !ALLOWED_IMAGE_MIME.has(mime)) {
+      throw new AppError("mime must be image/jpeg, image/jpg or image/png", 400, "VALIDATION_ERROR");
+    }
+  }
+
+  const parsedSize = Number(size ?? 0);
+  if (Number.isFinite(parsedSize) && parsedSize > 0 && parsedSize > MAX_GUEST_PHOTO_BYTES) {
+    throw new AppError("Photo must be 300KB or less", 400, "FILE_TOO_LARGE");
+  }
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId },
+    select: { id: true },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+
+  if (isS3StorageEnabled()) {
+    const exists = await storageObjectExists(normalizedKey);
+    if (!exists) {
+      throw new AppError("Uploaded photo not found in storage. Retry upload.", 400, "STORAGE_OBJECT_MISSING");
+    }
+  }
+
+  await db.raw.booking.update({
+    where: { id: bookingId },
+    data: {
+      guestPhotoKey: normalizedKey,
+      guestPhotoMime: typeof mime === "string" ? mime : null,
+      guestPhotoSize: Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : null,
+      guestPhotoUpdatedAt: new Date(),
+    },
+    select: { id: true },
+  });
+
+  res.json({
+    photoKey: normalizedKey,
+    photoUrl: publicUrlFromKey(normalizedKey),
+    size: Number.isFinite(parsedSize) && parsedSize > 0 ? parsedSize : null,
+    mime: typeof mime === "string" ? mime : null,
   });
 });
 
@@ -808,7 +925,7 @@ export const pendingPayments = asyncHandler(async (req: Request, res: Response) 
         paidTotal: paid.toFixed(2),
         outstanding: outstanding.toFixed(2),
         currency: b.currency ?? "NGN",
-        guestPhotoUrl: photoUrlFromKey(b.guestPhotoKey),
+        guestPhotoUrl: publicUrlFromKey(b.guestPhotoKey),
       };
     })
     .filter((x: any) => Number(x.outstanding) > 0.009);
