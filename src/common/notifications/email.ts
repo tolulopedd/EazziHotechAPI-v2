@@ -9,7 +9,10 @@ type SendGuestLifecycleEmailInput = {
   guestName?: string | null;
   bookingId: string;
   tenantName?: string | null;
+  tenantSlug?: string | null;
+  supportEmail?: string | null;
   propertyName?: string | null;
+  propertyAddress?: string | null;
   unitName?: string | null;
   checkIn?: Date | string | null;
   checkOut?: Date | string | null;
@@ -43,6 +46,73 @@ function formatDateTime(value: Date | string | null | undefined) {
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString("en-NG", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function formatDateDdMonYyyy(value: Date | string | null | undefined) {
+  if (!value) return "—";
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Lagos",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).formatToParts(d);
+
+  const day = parts.find((p) => p.type === "day")?.value ?? "—";
+  const month = (parts.find((p) => p.type === "month")?.value ?? "—").toUpperCase();
+  const year = parts.find((p) => p.type === "year")?.value ?? "—";
+  return `${day}-${month}-${year}`;
+}
+
+function formatTimeLagos(value: Date | string | null | undefined) {
+  if (!value) return "—";
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+
+  const parts = new Intl.DateTimeFormat("en-NG", {
+    timeZone: "Africa/Lagos",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).formatToParts(d);
+
+  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  const dayPeriod = (parts.find((p) => p.type === "dayPeriod")?.value ?? "").toLowerCase();
+
+  if (hour === 12 && minute === 0 && dayPeriod === "pm") return "12:00 Noon";
+  return d.toLocaleTimeString("en-NG", {
+    timeZone: "Africa/Lagos",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+function formatNairaAmount(value: string | number | null | undefined) {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return "—";
+  return amount.toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function bookingShortId(bookingId: string) {
+  const id = String(bookingId || "").trim();
+  if (!id) return "—";
+  return id.slice(-8).toUpperCase();
+}
+
+function propertyUnitLabel(input: SendGuestLifecycleEmailInput) {
+  const property = input.propertyName?.trim() || "—";
+  const unit = input.unitName?.trim() || "—";
+  return `${property} / ${unit}`;
+}
+
+function propertyAtAddressLabel(input: SendGuestLifecycleEmailInput) {
+  const property = input.propertyName?.trim() || "—";
+  const address = input.propertyAddress?.trim() || "—";
+  return `${property} at ${address}`;
 }
 
 async function sendEmailMessage(input: {
@@ -119,6 +189,92 @@ export async function sendPasswordResetEmail(input: SendPasswordResetEmailInput)
   });
 }
 
+export async function sendGuestBookingEmail(input: SendGuestLifecycleEmailInput) {
+  const appName = process.env.APP_NAME || "EazziHotech";
+  const tenantName = input.tenantName?.trim() || appName;
+  const tenantSlug = input.tenantSlug?.trim() || tenantName;
+  const supportEmail = input.supportEmail?.trim() || process.env.SUPPORT_EMAIL || process.env.EMAIL_FROM || "";
+  const subject = `Booking Confirmation - ${propertyUnitLabel(input)}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
+      <p>Hello ${escapeHtml(input.guestName?.trim() || "Guest")},</p>
+      <p>Your booking has been successfully created by the ${escapeHtml(tenantSlug)} Team.</p>
+      <p><b>Workspace:</b> ${escapeHtml(tenantName)}</p>
+      <p><b>Booking ID:</b> ${escapeHtml(bookingShortId(input.bookingId))}</p>
+      <p><b>Property / Unit:</b> ${escapeHtml(propertyAtAddressLabel(input))} / ${escapeHtml(input.unitName?.trim() || "—")}</p>
+      <p><b>Check-in:</b> ${escapeHtml(formatDateDdMonYyyy(input.checkIn))} at ${escapeHtml(formatTimeLagos(input.checkIn))}</p>
+      <p><b>Check-out:</b> ${escapeHtml(formatDateDdMonYyyy(input.checkOut))} at ${escapeHtml(formatTimeLagos(input.checkOut))}</p>
+      <p><b>Amount:</b> ₦${escapeHtml(formatNairaAmount(input.totalAmount))}</p>
+      <p>Please proceed with payment in accordance with the ${escapeHtml(tenantName)} policy.</p>
+      <p>If you require any assistance or clarification, kindly contact us. Thank you for choosing to stay with us.</p>
+      <p>Kind regards,<br/>${escapeHtml(tenantName)} Team<br/>${escapeHtml(String(supportEmail))}</p>
+    </div>
+  `;
+  await sendEmailMessage({
+    to: input.to,
+    subject,
+    html,
+    consoleFallback: `[email] Booking confirmation for ${input.to} (booking ${input.bookingId})`,
+  });
+}
+
+export async function sendGuestCheckInEmail(input: SendGuestLifecycleEmailInput) {
+  const appName = process.env.APP_NAME || "EazziHotech";
+  const tenantName = input.tenantName?.trim() || appName;
+  const tenantSlug = input.tenantSlug?.trim() || tenantName;
+  const supportEmail = input.supportEmail?.trim() || process.env.SUPPORT_EMAIL || process.env.EMAIL_FROM || "";
+  const subject = `Check-in Confirmation - Welcome to ${input.propertyName?.trim() || "Your Property"}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
+      <p>Hello ${escapeHtml(input.guestName?.trim() || "Guest")},</p>
+      <p>Your check-in has been successfully completed by the ${escapeHtml(tenantSlug)} Team.</p>
+      <p><b>Workspace:</b> ${escapeHtml(tenantName)}</p>
+      <p><b>Booking ID:</b> ${escapeHtml(bookingShortId(input.bookingId))}</p>
+      <p><b>Property / Unit:</b> ${escapeHtml(propertyAtAddressLabel(input))} / ${escapeHtml(input.unitName?.trim() || "—")}</p>
+      <p><b>Check-in Date:</b> ${escapeHtml(formatDateDdMonYyyy(input.checkIn))} at ${escapeHtml(formatTimeLagos(input.checkIn))}</p>
+      <p><b>Check-out Date:</b> ${escapeHtml(formatDateDdMonYyyy(input.checkOut))} at ${escapeHtml(formatTimeLagos(input.checkOut))}</p>
+      <p><b>Amount:</b> ₦${escapeHtml(formatNairaAmount(input.totalAmount))}</p>
+      <p>We are pleased to welcome you and hope you have a comfortable and enjoyable stay.</p>
+      <p>If you need any assistance during your stay, please do not hesitate to contact us.</p>
+      <p>Kind regards,<br/>${escapeHtml(tenantName)} Team<br/>${escapeHtml(String(supportEmail))}</p>
+    </div>
+  `;
+  await sendEmailMessage({
+    to: input.to,
+    subject,
+    html,
+    consoleFallback: `[email] Check-in confirmation for ${input.to} (booking ${input.bookingId})`,
+  });
+}
+
+export async function sendGuestCheckOutEmail(input: SendGuestLifecycleEmailInput) {
+  const appName = process.env.APP_NAME || "EazziHotech";
+  const tenantName = input.tenantName?.trim() || appName;
+  const tenantSlug = input.tenantSlug?.trim() || tenantName;
+  const supportEmail = input.supportEmail?.trim() || process.env.SUPPORT_EMAIL || process.env.EMAIL_FROM || "";
+  const subject = "Check-out Confirmation - Thank You for Staying with Us";
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
+      <p>Hello ${escapeHtml(input.guestName?.trim() || "Guest")},</p>
+      <p>Your check-out has been successfully completed by the ${escapeHtml(tenantSlug)} Team.</p>
+      <p><b>Workspace:</b> ${escapeHtml(tenantName)}</p>
+      <p><b>Booking ID:</b> ${escapeHtml(bookingShortId(input.bookingId))}</p>
+      <p><b>Property / Unit:</b> ${escapeHtml(propertyAtAddressLabel(input))} / ${escapeHtml(input.unitName?.trim() || "—")}</p>
+      <p><b>Check-in Date:</b> ${escapeHtml(formatDateDdMonYyyy(input.checkIn))} at ${escapeHtml(formatTimeLagos(input.checkIn))}</p>
+      <p><b>Check-out Date:</b> ${escapeHtml(formatDateDdMonYyyy(input.checkOut))} at ${escapeHtml(formatTimeLagos(input.checkOut))}</p>
+      <p><b>Amount:</b> ₦${escapeHtml(formatNairaAmount(input.totalAmount))}</p>
+      <p>Thank you for choosing to stay with us. We hope you had a pleasant experience and look forward to hosting you again.</p>
+      <p>Kind regards,<br/>${escapeHtml(tenantName)} Team<br/>${escapeHtml(String(supportEmail))}</p>
+    </div>
+  `;
+  await sendEmailMessage({
+    to: input.to,
+    subject,
+    html,
+    consoleFallback: `[email] Check-out confirmation for ${input.to} (booking ${input.bookingId})`,
+  });
+}
+
 function lifecycleTemplate(
   title: string,
   intro: string,
@@ -153,57 +309,6 @@ function lifecycleTemplate(
       <p style="margin: 16px 0 0; color: #6b7280;">${escapeHtml(footer)}</p>
     </div>
   `;
-}
-
-export async function sendGuestBookingEmail(input: SendGuestLifecycleEmailInput) {
-  const appName = process.env.APP_NAME || "EazziHotech";
-  const subject = `${appName}: Booking Confirmation`;
-  const html = lifecycleTemplate(
-    "Booking Confirmed",
-    "Your booking has been created successfully.",
-    input,
-    "Please contact the property team if any details need to be changed."
-  );
-  await sendEmailMessage({
-    to: input.to,
-    subject,
-    html,
-    consoleFallback: `[email] Booking confirmation for ${input.to} (booking ${input.bookingId})`,
-  });
-}
-
-export async function sendGuestCheckInEmail(input: SendGuestLifecycleEmailInput) {
-  const appName = process.env.APP_NAME || "EazziHotech";
-  const subject = `${appName}: Check-in Confirmation`;
-  const html = lifecycleTemplate(
-    "Check-in Completed",
-    "Your check-in has been completed successfully.",
-    input,
-    "We wish you a comfortable stay."
-  );
-  await sendEmailMessage({
-    to: input.to,
-    subject,
-    html,
-    consoleFallback: `[email] Check-in confirmation for ${input.to} (booking ${input.bookingId})`,
-  });
-}
-
-export async function sendGuestCheckOutEmail(input: SendGuestLifecycleEmailInput) {
-  const appName = process.env.APP_NAME || "EazziHotech";
-  const subject = `${appName}: Check-out Confirmation`;
-  const html = lifecycleTemplate(
-    "Check-out Completed",
-    "Your check-out has been completed successfully.",
-    input,
-    "Thank you for staying with us."
-  );
-  await sendEmailMessage({
-    to: input.to,
-    subject,
-    html,
-    consoleFallback: `[email] Check-out confirmation for ${input.to} (booking ${input.bookingId})`,
-  });
 }
 
 export async function sendAdminBookingAlertEmail(input: SendGuestLifecycleEmailInput) {

@@ -171,16 +171,23 @@ export const checkIn = asyncHandler(async (req: Request, res: Response) => {
       checkOut: true,
       totalAmount: true,
       currency: true,
-      unit: { select: { name: true, property: { select: { name: true } } } },
+      unit: { select: { name: true, property: { select: { name: true, address: true } } } },
     },
+  });
+  const tenantMeta = await db.raw.tenant.findUnique({
+    where: { id: tenantId },
+    select: { name: true, slug: true, email: true },
   });
   if (checkInNotifyBooking?.guestEmail) {
     sendGuestCheckInEmail({
       to: String(checkInNotifyBooking.guestEmail),
       guestName: checkInNotifyBooking.guestName ?? null,
       bookingId: checkInNotifyBooking.id,
-      tenantName: req.tenant?.name ?? null,
+      tenantName: tenantMeta?.name ?? null,
+      tenantSlug: tenantMeta?.slug ?? null,
+      supportEmail: tenantMeta?.email ?? null,
       propertyName: checkInNotifyBooking?.unit?.property?.name ?? null,
+      propertyAddress: checkInNotifyBooking?.unit?.property?.address ?? null,
       unitName: checkInNotifyBooking?.unit?.name ?? null,
       checkIn: checkInNotifyBooking.checkIn,
       checkOut: checkInNotifyBooking.checkOut,
@@ -206,8 +213,11 @@ export const checkIn = asyncHandler(async (req: Request, res: Response) => {
       to,
       guestName: checkInNotifyBooking?.guestName ?? null,
       bookingId: checkInNotifyBooking?.id ?? bookingId,
-      tenantName: req.tenant?.name ?? null,
+      tenantName: tenantMeta?.name ?? null,
+      tenantSlug: tenantMeta?.slug ?? null,
+      supportEmail: tenantMeta?.email ?? null,
       propertyName: checkInNotifyBooking?.unit?.property?.name ?? null,
+      propertyAddress: checkInNotifyBooking?.unit?.property?.address ?? null,
       unitName: checkInNotifyBooking?.unit?.name ?? null,
       checkIn: checkInNotifyBooking?.checkIn,
       checkOut: checkInNotifyBooking?.checkOut,
@@ -257,7 +267,7 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
       guestEmail: true,
       checkIn: true,
       checkOut: true,
-      unit: { select: { name: true, property: { select: { name: true } } } },
+      unit: { select: { name: true, property: { select: { name: true, address: true } } } },
     },
   });
 
@@ -414,14 +424,21 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
     },
     "Audit check-out"
   );
+  const checkoutTenantMeta = await db.raw.tenant.findUnique({
+    where: { id: tenantId },
+    select: { name: true, slug: true, email: true },
+  });
 
   if (booking.guestEmail) {
     sendGuestCheckOutEmail({
       to: String(booking.guestEmail),
       guestName: booking.guestName ?? null,
       bookingId: booking.id,
-      tenantName: req.tenant?.name ?? null,
+      tenantName: checkoutTenantMeta?.name ?? null,
+      tenantSlug: checkoutTenantMeta?.slug ?? null,
+      supportEmail: checkoutTenantMeta?.email ?? null,
       propertyName: booking?.unit?.property?.name ?? null,
+      propertyAddress: booking?.unit?.property?.address ?? null,
       unitName: booking?.unit?.name ?? null,
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
@@ -447,8 +464,11 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
       to,
       guestName: booking.guestName ?? null,
       bookingId: booking.id,
-      tenantName: req.tenant?.name ?? null,
+      tenantName: checkoutTenantMeta?.name ?? null,
+      tenantSlug: checkoutTenantMeta?.slug ?? null,
+      supportEmail: checkoutTenantMeta?.email ?? null,
       propertyName: booking?.unit?.property?.name ?? null,
+      propertyAddress: booking?.unit?.property?.address ?? null,
       unitName: booking?.unit?.name ?? null,
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,

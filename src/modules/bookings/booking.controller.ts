@@ -164,7 +164,7 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
       },
       include: {
         guest: { select: { id: true, fullName: true, email: true, phone: true } }, // ✅ return guest
-        unit: { select: { name: true, property: { select: { name: true } } } },
+        unit: { select: { name: true, property: { select: { name: true, address: true } } } },
       },
     });
 
@@ -200,13 +200,21 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
   );
 
   const bookingRecord: any = result;
+  const tenantMeta = await db.raw.tenant.findUnique({
+    where: { id: tenantId },
+    select: { name: true, slug: true, email: true },
+  });
+
   if (bookingRecord?.guestEmail) {
     sendGuestBookingEmail({
       to: String(bookingRecord.guestEmail),
       guestName: bookingRecord.guestName ?? bookingRecord.guest?.fullName ?? null,
       bookingId: bookingRecord.id,
-      tenantName: req.tenant?.name ?? null,
+      tenantName: tenantMeta?.name ?? null,
+      tenantSlug: tenantMeta?.slug ?? null,
+      supportEmail: tenantMeta?.email ?? null,
       propertyName: bookingRecord?.unit?.property?.name ?? null,
+      propertyAddress: bookingRecord?.unit?.property?.address ?? null,
       unitName: bookingRecord?.unit?.name ?? null,
       checkIn: bookingRecord.checkIn,
       checkOut: bookingRecord.checkOut,
@@ -232,8 +240,11 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
       to,
       guestName: bookingRecord.guestName ?? bookingRecord.guest?.fullName ?? null,
       bookingId: bookingRecord.id,
-      tenantName: req.tenant?.name ?? null,
+      tenantName: tenantMeta?.name ?? null,
+      tenantSlug: tenantMeta?.slug ?? null,
+      supportEmail: tenantMeta?.email ?? null,
       propertyName: bookingRecord?.unit?.property?.name ?? null,
+      propertyAddress: bookingRecord?.unit?.property?.address ?? null,
       unitName: bookingRecord?.unit?.name ?? null,
       checkIn: bookingRecord.checkIn,
       checkOut: bookingRecord.checkOut,
