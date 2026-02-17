@@ -121,18 +121,19 @@ export async function createPresignedGetUrlFromKey(input: {
   expiresInSec?: number;
 }) {
   const cfg = storageConfig();
-  if (cfg.driver !== "S3") {
+  if (!cfg.bucket || !cfg.region) return publicUrlFromKey(input.key);
+
+  try {
+    const client = getS3Client();
+    const command = new GetObjectCommand({
+      Bucket: cfg.bucket,
+      Key: cleanKey(input.key),
+    });
+    const expiresIn = Math.max(60, Math.min(input.expiresInSec ?? 900, 3600));
+    return await getSignedUrl(client, command, { expiresIn });
+  } catch {
     return publicUrlFromKey(input.key);
   }
-  if (!cfg.bucket) throw new Error("S3_BUCKET is required when STORAGE_DRIVER=S3");
-
-  const client = getS3Client();
-  const command = new GetObjectCommand({
-    Bucket: cfg.bucket,
-    Key: cleanKey(input.key),
-  });
-  const expiresIn = Math.max(60, Math.min(input.expiresInSec ?? 900, 3600));
-  return getSignedUrl(client, command, { expiresIn });
 }
 
 export async function storageObjectExists(key: string) {
