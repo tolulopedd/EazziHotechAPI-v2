@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { asyncHandler } from "../../common/utils/asyncHandler";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
+import { createPresignedGetUrlFromKey, publicUrlFromKey } from "../../common/storage/object-storage";
 
 /**
  * GET /api/bookings/arrivals/today
@@ -36,7 +37,16 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
     orderBy: { checkIn: "asc" },
   });
 
-  res.json({ bookings });
+  const rows = await Promise.all(
+    bookings.map(async (b: any) => ({
+      ...b,
+      guestPhotoUrl: b.guestPhotoKey
+        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 900 })
+        : publicUrlFromKey(b.guestPhotoKey),
+    }))
+  );
+
+  res.json({ bookings: rows });
 });
 
 /**
@@ -82,5 +92,14 @@ export const inHouse = asyncHandler(async (req: Request, res: Response) => {
     orderBy: { checkedInAt: "desc" },
   });
 
-  res.json({ bookings });
+  const rows = await Promise.all(
+    bookings.map(async (b: any) => ({
+      ...b,
+      guestPhotoUrl: b.guestPhotoKey
+        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 900 })
+        : publicUrlFromKey(b.guestPhotoKey),
+    }))
+  );
+
+  res.json({ bookings: rows });
 });

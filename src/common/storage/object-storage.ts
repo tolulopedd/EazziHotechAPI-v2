@@ -1,4 +1,4 @@
-import { HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 type StorageDriver = "LOCAL" | "S3";
@@ -114,6 +114,25 @@ export async function createPresignedPutUrl(input: {
   const expiresIn = Math.max(60, Math.min(input.expiresInSec ?? 300, 3600));
   const uploadUrl = await getSignedUrl(client, command, { expiresIn });
   return { uploadUrl, expiresIn };
+}
+
+export async function createPresignedGetUrlFromKey(input: {
+  key: string;
+  expiresInSec?: number;
+}) {
+  const cfg = storageConfig();
+  if (cfg.driver !== "S3") {
+    return publicUrlFromKey(input.key);
+  }
+  if (!cfg.bucket) throw new Error("S3_BUCKET is required when STORAGE_DRIVER=S3");
+
+  const client = getS3Client();
+  const command = new GetObjectCommand({
+    Bucket: cfg.bucket,
+    Key: cleanKey(input.key),
+  });
+  const expiresIn = Math.max(60, Math.min(input.expiresInSec ?? 900, 3600));
+  return getSignedUrl(client, command, { expiresIn });
 }
 
 export async function storageObjectExists(key: string) {
