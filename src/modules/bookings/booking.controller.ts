@@ -9,6 +9,7 @@ import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { logger } from "../../common/logger/logger";
 import { sendGuestBookingEmail } from "../../common/notifications/email";
 import {
+  createPresignedGetUrlFromKey,
   createPresignedPutUrl,
   isS3StorageEnabled,
   publicUrlFromKey,
@@ -337,7 +338,16 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
     orderBy: { checkIn: "asc" },
   });
 
-  res.json({ bookings: bookings.map((b: any) => withGuestPhotoUrl(b)) });
+  const rows = await Promise.all(
+    bookings.map(async (b: any) => ({
+      ...b,
+      guestPhotoUrl: b.guestPhotoKey
+        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 3600 })
+        : publicUrlFromKey(b.guestPhotoKey),
+    }))
+  );
+
+  res.json({ bookings: rows });
 });
 
 export const arrivalsWeek = asyncHandler(async (req: Request, res: Response) => {
@@ -383,7 +393,16 @@ export const arrivalsWeek = asyncHandler(async (req: Request, res: Response) => 
     orderBy: { checkIn: "asc" },
   });
 
-  res.json({ bookings: bookings.map((b: any) => withGuestPhotoUrl(b)) });
+  const rows = await Promise.all(
+    bookings.map(async (b: any) => ({
+      ...b,
+      guestPhotoUrl: b.guestPhotoKey
+        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 3600 })
+        : publicUrlFromKey(b.guestPhotoKey),
+    }))
+  );
+
+  res.json({ bookings: rows });
 });
 
 export const inHouse = asyncHandler(async (req: Request, res: Response) => {
@@ -439,7 +458,7 @@ export const inHouse = asyncHandler(async (req: Request, res: Response) => {
     orderBy: { checkedInAt: "desc" },
   });
 
-  const items = bookings.map((b: any) => {
+  const items = await Promise.all(bookings.map(async (b: any) => {
     const totalBill = computeTotalBillFromBaseAndCharges(
       Number(b.totalAmount?.toString?.() ?? b.totalAmount ?? 0),
       b.charges || []
@@ -448,12 +467,15 @@ export const inHouse = asyncHandler(async (req: Request, res: Response) => {
     const outstandingAmount = Math.max(0, totalBill - paidTotal);
 
     return {
-      ...withGuestPhotoUrl(b),
+      ...b,
+      guestPhotoUrl: b.guestPhotoKey
+        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 3600 })
+        : publicUrlFromKey(b.guestPhotoKey),
       totalBill: totalBill.toFixed(2),
       paidTotal: paidTotal.toFixed(2),
       outstandingAmount: outstandingAmount.toFixed(2),
     };
-  });
+  }));
 
   res.json({ bookings: items });
 });
