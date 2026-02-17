@@ -26,6 +26,14 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
       },
     },
     include: {
+      guest: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+        },
+      },
       unit: {
         select: {
           name: true,
@@ -41,7 +49,7 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
     bookings.map(async (b: any) => ({
       ...b,
       guestPhotoUrl: b.guestPhotoKey
-        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 900 })
+        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 3600 })
         : publicUrlFromKey(b.guestPhotoKey),
     }))
   );
@@ -81,6 +89,14 @@ export const inHouse = asyncHandler(async (req: Request, res: Response) => {
         : {}),
     },
     include: {
+      guest: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+        },
+      },
       unit: {
         select: {
           name: true,
@@ -96,7 +112,7 @@ export const inHouse = asyncHandler(async (req: Request, res: Response) => {
     bookings.map(async (b: any) => ({
       ...b,
       guestPhotoUrl: b.guestPhotoKey
-        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 900 })
+        ? await createPresignedGetUrlFromKey({ key: b.guestPhotoKey, expiresInSec: 3600 })
         : publicUrlFromKey(b.guestPhotoKey),
     }))
   );
