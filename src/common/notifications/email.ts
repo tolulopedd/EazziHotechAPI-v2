@@ -205,3 +205,54 @@ export async function sendGuestCheckOutEmail(input: SendGuestLifecycleEmailInput
     consoleFallback: `[email] Check-out confirmation for ${input.to} (booking ${input.bookingId})`,
   });
 }
+
+export async function sendAdminBookingAlertEmail(input: SendGuestLifecycleEmailInput) {
+  const appName = process.env.APP_NAME || "EazziHotech";
+  const subject = `${appName}: New Booking Alert`;
+  const html = lifecycleTemplate(
+    "New Booking Created",
+    `A booking has been created for ${input.guestName?.trim() || "a guest"}.`,
+    input,
+    "Review booking details and payment status in the dashboard."
+  );
+  await sendEmailMessage({
+    to: input.to,
+    subject,
+    html,
+    consoleFallback: `[email] Admin booking alert for ${input.to} (booking ${input.bookingId})`,
+  });
+}
+
+export async function sendAdminCheckInAlertEmail(input: SendGuestLifecycleEmailInput) {
+  const appName = process.env.APP_NAME || "EazziHotech";
+  const subject = `${appName}: Guest Check-in Alert`;
+  const html = lifecycleTemplate(
+    "Guest Checked In",
+    `${input.guestName?.trim() || "A guest"} has completed check-in.`,
+    input,
+    "Please ensure room-readiness and service notes are tracked."
+  );
+  await sendEmailMessage({
+    to: input.to,
+    subject,
+    html,
+    consoleFallback: `[email] Admin check-in alert for ${input.to} (booking ${input.bookingId})`,
+  });
+}
+
+export async function sendAdminCheckOutAlertEmail(input: SendGuestLifecycleEmailInput) {
+  const appName = process.env.APP_NAME || "EazziHotech";
+  const subject = `${appName}: Guest Check-out Alert`;
+  const html = lifecycleTemplate(
+    "Guest Checked Out",
+    `${input.guestName?.trim() || "A guest"} has completed check-out.`,
+    input,
+    "Review final settlement, room condition, and any damages or refunds."
+  );
+  await sendEmailMessage({
+    to: input.to,
+    subject,
+    html,
+    consoleFallback: `[email] Admin check-out alert for ${input.to} (booking ${input.bookingId})`,
+  });
+}

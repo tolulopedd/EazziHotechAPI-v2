@@ -7,7 +7,7 @@ import { asyncHandler } from "../../common/utils/asyncHandler";
 import { AppError } from "../../common/errors/AppError";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { logger } from "../../common/logger/logger";
-import { sendGuestBookingEmail } from "../../common/notifications/email";
+import { sendAdminBookingAlertEmail, sendGuestBookingEmail } from "../../common/notifications/email";
 import {
   createPresignedGetUrlFromKey,
   createPresignedPutUrl,
@@ -216,6 +216,33 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
       logger.warn(
         { event: "notify.booking_email_failed", tenantId, bookingId: bookingRecord.id, error: String(err) },
         "Failed to send booking email"
+      );
+    });
+  }
+
+  const adminRecipients = await db.raw.user.findMany({
+    where: { tenantId, role: "ADMIN", status: "ACTIVE" },
+    select: { email: true },
+  });
+
+  for (const admin of adminRecipients) {
+    const to = String(admin.email || "").trim();
+    if (!to) continue;
+    sendAdminBookingAlertEmail({
+      to,
+      guestName: bookingRecord.guestName ?? bookingRecord.guest?.fullName ?? null,
+      bookingId: bookingRecord.id,
+      tenantName: req.tenant?.name ?? null,
+      propertyName: bookingRecord?.unit?.property?.name ?? null,
+      unitName: bookingRecord?.unit?.name ?? null,
+      checkIn: bookingRecord.checkIn,
+      checkOut: bookingRecord.checkOut,
+      totalAmount: bookingRecord.totalAmount?.toString?.() ?? bookingRecord.totalAmount ?? null,
+      currency: bookingRecord.currency ?? "NGN",
+    }).catch((err) => {
+      logger.warn(
+        { event: "notify.booking_admin_email_failed", tenantId, bookingId: bookingRecord.id, adminEmail: to, error: String(err) },
+        "Failed to send admin booking alert email"
       );
     });
   }

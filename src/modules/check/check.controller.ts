@@ -3,7 +3,12 @@ import { asyncHandler } from "../../common/utils/asyncHandler";
 import { AppError } from "../../common/errors/AppError";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { logger } from "../../common/logger/logger";
-import { sendGuestCheckInEmail, sendGuestCheckOutEmail } from "../../common/notifications/email";
+import {
+  sendAdminCheckInAlertEmail,
+  sendAdminCheckOutAlertEmail,
+  sendGuestCheckInEmail,
+  sendGuestCheckOutEmail,
+} from "../../common/notifications/email";
 
 function toOptionalString(value: unknown) {
   if (value === null || value === undefined) return null;
@@ -185,6 +190,33 @@ export const checkIn = asyncHandler(async (req: Request, res: Response) => {
       logger.warn(
         { event: "notify.checkin_email_failed", tenantId, bookingId, error: String(err) },
         "Failed to send check-in email"
+      );
+    });
+  }
+
+  const checkInAdminRecipients = await db.raw.user.findMany({
+    where: { tenantId, role: "ADMIN", status: "ACTIVE" },
+    select: { email: true },
+  });
+
+  for (const admin of checkInAdminRecipients) {
+    const to = String(admin.email || "").trim();
+    if (!to) continue;
+    sendAdminCheckInAlertEmail({
+      to,
+      guestName: checkInNotifyBooking?.guestName ?? null,
+      bookingId: checkInNotifyBooking?.id ?? bookingId,
+      tenantName: req.tenant?.name ?? null,
+      propertyName: checkInNotifyBooking?.unit?.property?.name ?? null,
+      unitName: checkInNotifyBooking?.unit?.name ?? null,
+      checkIn: checkInNotifyBooking?.checkIn,
+      checkOut: checkInNotifyBooking?.checkOut,
+      totalAmount: checkInNotifyBooking?.totalAmount?.toString?.() ?? checkInNotifyBooking?.totalAmount ?? null,
+      currency: checkInNotifyBooking?.currency ?? "NGN",
+    }).catch((err) => {
+      logger.warn(
+        { event: "notify.checkin_admin_email_failed", tenantId, bookingId, adminEmail: to, error: String(err) },
+        "Failed to send admin check-in alert email"
       );
     });
   }
@@ -399,6 +431,33 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
       logger.warn(
         { event: "notify.checkout_email_failed", tenantId, bookingId, error: String(err) },
         "Failed to send check-out email"
+      );
+    });
+  }
+
+  const checkOutAdminRecipients = await db.raw.user.findMany({
+    where: { tenantId, role: "ADMIN", status: "ACTIVE" },
+    select: { email: true },
+  });
+
+  for (const admin of checkOutAdminRecipients) {
+    const to = String(admin.email || "").trim();
+    if (!to) continue;
+    sendAdminCheckOutAlertEmail({
+      to,
+      guestName: booking.guestName ?? null,
+      bookingId: booking.id,
+      tenantName: req.tenant?.name ?? null,
+      propertyName: booking?.unit?.property?.name ?? null,
+      unitName: booking?.unit?.name ?? null,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      totalAmount: booking.totalAmount?.toString?.() ?? booking.totalAmount ?? null,
+      currency: booking.currency ?? "NGN",
+    }).catch((err) => {
+      logger.warn(
+        { event: "notify.checkout_admin_email_failed", tenantId, bookingId, adminEmail: to, error: String(err) },
+        "Failed to send admin check-out alert email"
       );
     });
   }
