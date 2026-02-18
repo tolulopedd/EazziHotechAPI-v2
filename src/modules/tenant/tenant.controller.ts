@@ -439,6 +439,7 @@ export async function listPlatformTenants(req: Request, res: Response, next: Nex
         orderBy: { createdAt: "desc" },
         skip,
         take: pageSize,
+        include: { settings: true },
       }),
     ]);
 
@@ -447,7 +448,10 @@ export async function listPlatformTenants(req: Request, res: Response, next: Nex
       pageSize,
       total,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
-      tenants: tenants.map(safeTenant),
+      tenants: tenants.map((t) => ({
+        ...safeTenant(t),
+        settings: t.settings ? safeSettings(t.settings) : null,
+      })),
     });
   } catch (err) {
     next(err);
@@ -506,6 +510,161 @@ export async function updatePlatformTenantSubscription(req: Request, res: Respon
     });
 
     return res.json({ tenant: safeTenant(updated) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /api/platform/tenants/:tenantId/settings
+ * ✅ SUPERADMIN only: update tenant policy + plan limits for any tenant
+ */
+export async function updatePlatformTenantSettings(req: Request, res: Response, next: NextFunction) {
+  try {
+    await requireSuperAdmin(req);
+
+    const tenantId = String(req.params.tenantId || "").trim();
+    if (!tenantId) throw new AppError("tenantId is required", 400, "VALIDATION_ERROR");
+
+    const {
+      minDepositPercent,
+      maxProperties,
+      maxUnits,
+      maxUsers,
+    } = req.body as {
+      minDepositPercent?: number;
+      maxProperties?: number;
+      maxUnits?: number;
+      maxUsers?: number;
+    };
+
+    const nextValues = {
+      minDepositPercent: minDepositPercent !== undefined ? Number(minDepositPercent) : undefined,
+      maxProperties: maxProperties !== undefined ? Number(maxProperties) : undefined,
+      maxUnits: maxUnits !== undefined ? Number(maxUnits) : undefined,
+      maxUsers: maxUsers !== undefined ? Number(maxUsers) : undefined,
+    };
+
+    if (
+      nextValues.minDepositPercent !== undefined &&
+      (!Number.isInteger(nextValues.minDepositPercent) ||
+        nextValues.minDepositPercent < 0 ||
+        nextValues.minDepositPercent > 100)
+    ) {
+      throw new AppError("minDepositPercent must be an integer between 0 and 100", 400, "VALIDATION_ERROR");
+    }
+    if (nextValues.maxProperties !== undefined && (!Number.isInteger(nextValues.maxProperties) || nextValues.maxProperties < 1)) {
+      throw new AppError("maxProperties must be an integer >= 1", 400, "VALIDATION_ERROR");
+    }
+    if (nextValues.maxUnits !== undefined && (!Number.isInteger(nextValues.maxUnits) || nextValues.maxUnits < 1)) {
+      throw new AppError("maxUnits must be an integer >= 1", 400, "VALIDATION_ERROR");
+    }
+    if (nextValues.maxUsers !== undefined && (!Number.isInteger(nextValues.maxUsers) || nextValues.maxUsers < 1)) {
+      throw new AppError("maxUsers must be an integer >= 1", 400, "VALIDATION_ERROR");
+    }
+
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
+    if (!tenant) throw new AppError("Tenant not found", 404, "NOT_FOUND");
+
+    const settings = await prisma.tenantSettings.upsert({
+      where: { tenantId },
+      create: {
+        tenantId,
+        ...(nextValues.minDepositPercent !== undefined ? { minDepositPercent: nextValues.minDepositPercent } : {}),
+        ...(nextValues.maxProperties !== undefined ? { maxProperties: nextValues.maxProperties } : {}),
+        ...(nextValues.maxUnits !== undefined ? { maxUnits: nextValues.maxUnits } : {}),
+        ...(nextValues.maxUsers !== undefined ? { maxUsers: nextValues.maxUsers } : {}),
+      },
+      update: {
+        ...(nextValues.minDepositPercent !== undefined ? { minDepositPercent: nextValues.minDepositPercent } : {}),
+        ...(nextValues.maxProperties !== undefined ? { maxProperties: nextValues.maxProperties } : {}),
+        ...(nextValues.maxUnits !== undefined ? { maxUnits: nextValues.maxUnits } : {}),
+        ...(nextValues.maxUsers !== undefined ? { maxUsers: nextValues.maxUsers } : {}),
+      },
+    });
+
+    return res.json({
+      tenant: safeTenant(tenant),
+      settings: safeSettings(settings),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * GET /api/platform/tenant-admins?search=&tenantId=&status=&page=&pageSize=
+ * ✅ SUPERADMIN only: list ADMIN users across all tenants
+ */
+export async function listPlatformTenantAdmins(req: Request, res: Response, next: NextFunction) {
+  try {
+    await requireSuperAdmin(req);
+
+    const search = (req.query.search as string | undefined)?.trim();
+    const tenantId = (req.query.tenantId as string | undefined)?.trim();
+    const statusQuery = (req.query.status as string | undefined)?.trim().toUpperCase();
+    const status = statusQuery
+      ? (["ACTIVE", "DISABLED"].includes(statusQuery) ? statusQuery : null)
+      : undefined;
+    if (status === null) throw new AppError("Invalid status filter", 400, "VALIDATION_ERROR");
+
+    const page = Math.max(parseInt((req.query.page as string) || "1", 10), 1);
+    const pageSize = Math.min(Math.max(parseInt((req.query.pageSize as string) || "20", 10), 1), 200);
+    const skip = (page - 1) * pageSize;
+
+    const where: any = {
+      role: "ADMIN",
+      ...(tenantId ? { tenantId } : {}),
+      ...(status ? { status } : {}),
+      ...(search
+        ? {
+            OR: [
+              { email: { contains: search, mode: "insensitive" } },
+              { fullName: { contains: search, mode: "insensitive" } },
+              { tenant: { name: { contains: search, mode: "insensitive" } } },
+              { tenant: { slug: { contains: search, mode: "insensitive" } } },
+            ],
+          }
+        : {}),
+    };
+
+    const [total, users] = await Promise.all([
+      prisma.user.count({ where }),
+      prisma.user.findMany({
+        where,
+        skip,
+        take: pageSize,
+        orderBy: [{ createdAt: "desc" }],
+        select: {
+          id: true,
+          tenantId: true,
+          email: true,
+          role: true,
+          status: true,
+          fullName: true,
+          phone: true,
+          createdAt: true,
+          updatedAt: true,
+          tenant: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              status: true,
+              subscriptionStatus: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    return res.json({
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      users,
+    });
   } catch (err) {
     next(err);
   }

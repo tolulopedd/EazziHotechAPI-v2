@@ -3,9 +3,11 @@ import { requireAuth } from "../../middleware/auth.middleware";
 import {
   createPlatformTenant,
   getMyTenant,
+  listPlatformTenantAdmins,
   listPlatformTenants,
   updateMyTenant,
   updateMyTenantSubscription,
+  updatePlatformTenantSettings,
   updatePlatformTenantSubscription,
 } from "./tenant.controller";
 
@@ -17,3 +19,5 @@ tenantRoutes.patch("/tenant/subscription", requireAuth, updateMyTenantSubscripti
 tenantRoutes.post("/platform/tenants", requireAuth, createPlatformTenant);
 tenantRoutes.get("/platform/tenants", requireAuth, listPlatformTenants);
 tenantRoutes.patch("/platform/tenants/:tenantId/subscription", requireAuth, updatePlatformTenantSubscription);
+tenantRoutes.patch("/platform/tenants/:tenantId/settings", requireAuth, updatePlatformTenantSettings);
+tenantRoutes.get("/platform/tenant-admins", requireAuth, listPlatformTenantAdmins);
