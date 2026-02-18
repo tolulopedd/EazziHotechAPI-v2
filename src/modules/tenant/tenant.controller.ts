@@ -669,3 +669,119 @@ export async function listPlatformTenantAdmins(req: Request, res: Response, next
     next(err);
   }
 }
+
+/**
+ * PATCH /api/platform/users/:userId
+ * ✅ SUPERADMIN only: update any user across tenants
+ */
+export async function updatePlatformUser(req: Request, res: Response, next: NextFunction) {
+  try {
+    await requireSuperAdmin(req);
+
+    const userId = String(req.params.userId || "").trim();
+    if (!userId) throw new AppError("userId is required", 400, "VALIDATION_ERROR");
+
+    const { fullName, phone, role } = req.body as {
+      fullName?: string | null;
+      phone?: string | null;
+      role?: "ADMIN" | "MANAGER" | "STAFF";
+    };
+
+    if (role !== undefined && !["ADMIN", "MANAGER", "STAFF"].includes(role)) {
+      throw new AppError("role must be ADMIN, MANAGER, or STAFF", 400, "VALIDATION_ERROR");
+    }
+
+    const target = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (!target) throw new AppError("User not found", 404, "NOT_FOUND");
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(fullName !== undefined ? { fullName: normalizeOptionalString(fullName) } : {}),
+        ...(phone !== undefined ? { phone: normalizeOptionalString(phone) } : {}),
+        ...(role !== undefined ? { role } : {}),
+      },
+      select: {
+        id: true,
+        tenantId: true,
+        email: true,
+        role: true,
+        status: true,
+        fullName: true,
+        phone: true,
+        createdAt: true,
+        updatedAt: true,
+        tenant: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            status: true,
+            subscriptionStatus: true,
+          },
+        },
+      },
+    });
+
+    return res.json({ user: updated });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/platform/users/:userId/disable
+ * POST /api/platform/users/:userId/enable
+ * ✅ SUPERADMIN only
+ */
+export async function togglePlatformUserStatus(req: Request, res: Response, next: NextFunction) {
+  try {
+    await requireSuperAdmin(req);
+
+    const userId = String(req.params.userId || "").trim();
+    if (!userId) throw new AppError("userId is required", 400, "VALIDATION_ERROR");
+
+    const action = String(req.params.action || "").trim().toLowerCase();
+    if (!["disable", "enable"].includes(action)) {
+      throw new AppError("action must be disable or enable", 400, "VALIDATION_ERROR");
+    }
+
+    const target = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (!target) throw new AppError("User not found", 404, "NOT_FOUND");
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { status: action === "disable" ? "DISABLED" : "ACTIVE" },
+      select: {
+        id: true,
+        tenantId: true,
+        email: true,
+        role: true,
+        status: true,
+        fullName: true,
+        phone: true,
+        createdAt: true,
+        updatedAt: true,
+        tenant: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            status: true,
+            subscriptionStatus: true,
+          },
+        },
+      },
+    });
+
+    return res.json({ user: updated });
+  } catch (err) {
+    next(err);
+  }
+}

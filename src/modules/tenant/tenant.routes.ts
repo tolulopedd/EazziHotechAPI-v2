@@ -5,9 +5,11 @@ import {
   getMyTenant,
   listPlatformTenantAdmins,
   listPlatformTenants,
+  togglePlatformUserStatus,
   updateMyTenant,
   updateMyTenantSubscription,
   updatePlatformTenantSettings,
+  updatePlatformUser,
   updatePlatformTenantSubscription,
 } from "./tenant.controller";
 
@@ -21,3 +23,5 @@ tenantRoutes.get("/platform/tenants", requireAuth, listPlatformTenants);
 tenantRoutes.patch("/platform/tenants/:tenantId/subscription", requireAuth, updatePlatformTenantSubscription);
 tenantRoutes.patch("/platform/tenants/:tenantId/settings", requireAuth, updatePlatformTenantSettings);
 tenantRoutes.get("/platform/tenant-admins", requireAuth, listPlatformTenantAdmins);
+tenantRoutes.patch("/platform/users/:userId", requireAuth, updatePlatformUser);
+tenantRoutes.post("/platform/users/:userId/:action", requireAuth, togglePlatformUserStatus);
