@@ -284,9 +284,11 @@ async function buildBookingsPaymentsReport(req: Request) {
       type: "CHECK_OUT",
       earlyCheckout: true,
       capturedAt: { gte: from, lt: toExclusive },
-      ...scopedBookingWhere(propertyScope),
-      ...(propertyId ? { booking: { unit: { propertyId } } } : {}),
-      ...(unitId ? { booking: { unitId } } : {}),
+      booking: {
+        ...scopedBookingWhere(propertyScope),
+        ...(propertyId ? { unit: { propertyId } } : {}),
+        ...(unitId ? { unitId } : {}),
+      },
     },
     select: {
       id: true,
