@@ -75,6 +75,11 @@ export function scopedBookingWhere(scope: PropertyScope) {
   return { unit: { propertyId: { in: scope.propertyIds } } };
 }
 
+export function scopedPaymentWhere(scope: PropertyScope) {
+  if (scope.propertyIds === null) return {};
+  return { booking: { unit: { propertyId: { in: scope.propertyIds } } } };
+}
+
 export function assertPropertyInScope(scope: PropertyScope, propertyId: string) {
   if (scope.propertyIds === null) return;
   if (!scope.propertyIds.includes(propertyId)) {

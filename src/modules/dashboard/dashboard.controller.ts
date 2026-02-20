@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { prisma } from "../../prisma/client";
 import { AppError } from "../../common/errors/AppError";
-import { resolvePropertyScope, scopedBookingWhere, scopedPropertyWhere, scopedUnitWhere } from "../../common/authz/property-scope";
+import { resolvePropertyScope, scopedBookingWhere, scopedPaymentWhere, scopedPropertyWhere, scopedUnitWhere } from "../../common/authz/property-scope";
 
 type Role = "ADMIN" | "MANAGER" | "STAFF";
 type JwtUser = { userId: string; tenantId: string; role: Role };
@@ -57,6 +57,7 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
     const propertyScope = await resolvePropertyScope(req);
     const scope = { tenantId };
     const bookingScope = { ...scope, ...scopedBookingWhere(propertyScope) };
+    const paymentScope = { ...scope, ...scopedPaymentWhere(propertyScope) };
     const propertyWhere = { ...scope, ...scopedPropertyWhere(propertyScope) };
     const unitWhere = { ...scope, ...scopedUnitWhere(propertyScope) };
 
@@ -88,7 +89,7 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
 
     // Pending payments (all roles)
     const paymentRows = await prisma.payment.findMany({
-      where: { ...bookingScope, status: "PENDING" },
+      where: { ...paymentScope, status: "PENDING" },
       orderBy: { createdAt: "desc" },
       take: 5,
       select: {
@@ -127,7 +128,7 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
       prisma.booking.count({
         where: { ...bookingScope, status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] } },
       }),
-      prisma.payment.count({ where: { ...scope, ...scopedBookingWhere(propertyScope), status: "PENDING" } }),
+      prisma.payment.count({ where: { ...paymentScope, status: "PENDING" } }),
     ]);
 
     // Occupancy from active stays today (distinct unitId)
@@ -196,7 +197,7 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
     // ADMIN: full visibility
     const [revenueAgg, staffCount] = await Promise.all([
       prisma.payment.aggregate({
-        where: { ...scope, ...scopedBookingWhere(propertyScope), status: "CONFIRMED" },
+        where: { ...paymentScope, status: "CONFIRMED" },
         _sum: { amount: true },
       }),
       prisma.user.count({ where: scope }),
