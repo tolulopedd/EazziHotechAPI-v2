@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { asyncHandler } from "../../common/utils/asyncHandler";
 import { AppError } from "../../common/errors/AppError";
+import { resolvePropertyScope, scopedPropertyWhere } from "../../common/authz/property-scope";
 
 // prisma folder is at project root (outside src)
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
@@ -34,8 +35,10 @@ export const createProperty = asyncHandler(async (req: Request, res: Response) =
 export const listProperties = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const properties = await db.property.findMany({
+    where: scopedPropertyWhere(propertyScope),
     orderBy: { createdAt: "desc" },
   });
 

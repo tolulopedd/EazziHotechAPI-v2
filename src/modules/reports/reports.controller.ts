@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { asyncHandler } from "../../common/utils/asyncHandler";
 import { AppError } from "../../common/errors/AppError";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
+import { assertPropertyInScope, resolvePropertyScope, scopedBookingWhere, scopedUnitWhere } from "../../common/authz/property-scope";
 
 function computeTotalBillFromBaseAndCharges(
   baseAmount: number,
@@ -72,6 +73,7 @@ function isoDay(d: Date) {
 async function buildBookingsPaymentsReport(req: Request) {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const fromQ = String(req.query.from || "");
   const toQ = String(req.query.to || "");
@@ -90,10 +92,12 @@ async function buildBookingsPaymentsReport(req: Request) {
   const includeCancelled = String(req.query.includeCancelled || "false") === "true";
   const propertyId = String(req.query.propertyId || "").trim();
   const unitId = String(req.query.unitId || "").trim();
+  if (propertyId) assertPropertyInScope(propertyScope, propertyId);
   const bookingScope: any = {
     ...(includeCancelled ? {} : { status: { notIn: ["CANCELLED", "NO_SHOW"] } }),
     ...(unitId ? { unitId } : {}),
     ...(propertyId ? { unit: { propertyId } } : {}),
+    ...scopedBookingWhere(propertyScope),
   };
 
   const bookingWhere: any = {
@@ -280,6 +284,7 @@ async function buildBookingsPaymentsReport(req: Request) {
       type: "CHECK_OUT",
       earlyCheckout: true,
       capturedAt: { gte: from, lt: toExclusive },
+      ...scopedBookingWhere(propertyScope),
       ...(propertyId ? { booking: { unit: { propertyId } } } : {}),
       ...(unitId ? { booking: { unitId } } : {}),
     },
@@ -336,6 +341,7 @@ async function buildBookingsPaymentsReport(req: Request) {
   const overstayedBookings = await db.raw.booking.findMany({
     where: {
       tenantId,
+      ...scopedBookingWhere(propertyScope),
       status: "CHECKED_IN",
       checkOut: { lt: new Date() },
       ...(propertyId ? { unit: { propertyId } } : {}),
@@ -395,6 +401,7 @@ async function buildBookingsPaymentsReport(req: Request) {
   const totalUnits = await db.raw.unit.count({
     where: {
       tenantId,
+      ...scopedUnitWhere(propertyScope),
       ...(propertyId ? { propertyId } : {}),
       ...(unitId ? { id: unitId } : {}),
     },
@@ -404,6 +411,7 @@ async function buildBookingsPaymentsReport(req: Request) {
     .findMany({
       where: {
         tenantId,
+        ...scopedBookingWhere(propertyScope),
         status: "CHECKED_IN",
         ...(propertyId ? { unit: { propertyId } } : {}),
         ...(unitId ? { unitId } : {}),
@@ -421,7 +429,7 @@ async function buildBookingsPaymentsReport(req: Request) {
       type: "DAMAGE",
       status: "OPEN",
       createdAt: { gte: from, lt: toExclusive },
-      ...(Object.keys(bookingScope).length ? { booking: bookingScope } : {}),
+      booking: bookingScope,
     },
     select: {
       id: true,

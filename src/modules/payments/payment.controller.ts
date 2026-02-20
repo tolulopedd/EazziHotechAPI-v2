@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { asyncHandler } from "../../common/utils/asyncHandler";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { AppError } from "../../common/errors/AppError";
+import { resolvePropertyScope, scopedBookingWhere } from "../../common/authz/property-scope";
 
 function computeTotalBillFromBaseAndCharges(
   baseAmount: number,
@@ -19,6 +20,7 @@ function computeTotalBillFromBaseAndCharges(
 export const listPayments = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const status = (req.query.status ? String(req.query.status) : undefined) as any;
   const bookingId = req.query.bookingId ? String(req.query.bookingId) : undefined;
@@ -26,6 +28,7 @@ export const listPayments = asyncHandler(async (req: Request, res: Response) => 
 
   const where: any = {
     tenantId,
+    ...scopedBookingWhere(propertyScope),
     ...(status ? { status } : {}),
     ...(bookingId ? { bookingId } : {}),
     ...(q
@@ -74,11 +77,13 @@ export const listPayments = asyncHandler(async (req: Request, res: Response) => 
 export const listOutstandingBookings = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   // Pull active-ish bookings (you can tweak this)
   const bookings = await db.raw.booking.findMany({
     where: {
       tenantId,
+      ...scopedBookingWhere(propertyScope),
       status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] },
       // paymentStatus: { in: ["UNPAID", "PARTPAID"] }, // optional filter, but we compute anyway
     },
@@ -137,12 +142,20 @@ export const listOutstandingBookings = asyncHandler(async (req: Request, res: Re
 export const createManualPayment = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const { bookingId } = req.params;
   const { amount, currency, reference, notes, paidAt } = req.body;
 
   const booking = await db.booking.findById(bookingId);
   if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+  if (propertyScope.propertyIds !== null) {
+    const scopedBooking = await db.raw.booking.findFirst({
+      where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+      select: { id: true },
+    });
+    if (!scopedBooking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+  }
 
   if (!amount) throw new AppError("amount is required", 400, "VALIDATION_ERROR");
 
@@ -166,13 +179,14 @@ export const createManualPayment = asyncHandler(async (req: Request, res: Respon
 export const confirmPayment = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const user = (req as any).user;
   const { paymentId } = req.params;
 
   // Load payment + booking + confirmed payments + OPEN charges
   const payment = await db.raw.payment.findFirst({
-    where: { id: paymentId, tenantId },
+    where: { id: paymentId, tenantId, ...scopedBookingWhere(propertyScope) },
     include: {
       booking: {
         include: {

@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { asyncHandler } from "../../common/utils/asyncHandler";
 import { AppError } from "../../common/errors/AppError";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
+import { resolvePropertyScope } from "../../common/authz/property-scope";
 
 function normalizeOptionalString(value: unknown) {
   if (value === null || value === undefined) return null;
@@ -23,10 +24,20 @@ function getParamString(value: unknown, name: string) {
 export const listGuests = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const q = String(req.query.q || "").trim();
 
-  const where: any = { tenantId };
+  const where: any = {
+    tenantId,
+    ...(propertyScope.propertyIds === null
+      ? {}
+      : {
+          bookings: {
+            some: { unit: { propertyId: { in: propertyScope.propertyIds } } },
+          },
+        }),
+  };
 
   if (q) {
     where.OR = [
@@ -131,6 +142,7 @@ export const createGuest = asyncHandler(async (req: Request, res: Response) => {
 export const updateGuest = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const id = getParamString(req.params.id, "id");
   const {
@@ -150,7 +162,13 @@ export const updateGuest = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const guest = await db.raw.guest.findFirst({
-    where: { id, tenantId },
+    where: {
+      id,
+      tenantId,
+      ...(propertyScope.propertyIds === null
+        ? {}
+        : { bookings: { some: { unit: { propertyId: { in: propertyScope.propertyIds } } } } }),
+    },
   });
 
   if (!guest) {
@@ -178,13 +196,23 @@ export const updateGuest = asyncHandler(async (req: Request, res: Response) => {
 export const getGuestById = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const id = getParamString(req.params.id, "id");
 
   const guest = await db.raw.guest.findFirst({
-    where: { id, tenantId },
+    where: {
+      id,
+      tenantId,
+      ...(propertyScope.propertyIds === null
+        ? {}
+        : { bookings: { some: { unit: { propertyId: { in: propertyScope.propertyIds } } } } }),
+    },
     include: {
       bookings: {
+        ...(propertyScope.propertyIds === null
+          ? {}
+          : { where: { unit: { propertyId: { in: propertyScope.propertyIds } } } }),
         orderBy: { createdAt: "desc" },
         take: 1,
         select: {

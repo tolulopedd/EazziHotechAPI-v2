@@ -9,6 +9,7 @@ import {
   sendGuestCheckInEmail,
   sendGuestCheckOutEmail,
 } from "../../common/notifications/email";
+import { resolvePropertyScope, scopedBookingWhere } from "../../common/authz/property-scope";
 
 function toOptionalString(value: unknown) {
   if (value === null || value === undefined) return null;
@@ -43,13 +44,14 @@ export const checkIn = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const user = (req as any).user;
+  const propertyScope = await resolvePropertyScope(req);
 
   const { bookingId } = req.params;
   const { photoUrl, idDocUrl, notes } = req.body;
   if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
 
   const result = await db.raw.$transaction(async (tx) => {
-    const booking = await tx.booking.findFirst({ where: { id: bookingId, tenantId } });
+    const booking = await tx.booking.findFirst({ where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) } });
     if (!booking) {
       throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
     }
@@ -241,6 +243,7 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const user = (req as any).user;
+  const propertyScope = await resolvePropertyScope(req);
 
   const { bookingId } = req.params;
   const { photoUrl, notes, damagesCost, damagesNotes, refundPolicy, refundApproved, refundAmount, refundReason } =
@@ -257,7 +260,7 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
     Number.isFinite(parsedRefundAmount) && parsedRefundAmount > 0 ? parsedRefundAmount : 0;
 
   const booking = await db.raw.booking.findFirst({
-    where: { id: bookingId, tenantId },
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
     select: {
       id: true,
       status: true,
@@ -491,6 +494,7 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
 export const addOverstayCharge = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
   const { bookingId } = req.params;
   const { amount, notes, title } = req.body ?? {};
   if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
@@ -502,7 +506,7 @@ export const addOverstayCharge = asyncHandler(async (req: Request, res: Response
   }
 
   const booking = await db.raw.booking.findFirst({
-    where: { id: bookingId, tenantId },
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
     select: {
       id: true,
       status: true,

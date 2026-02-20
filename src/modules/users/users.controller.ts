@@ -40,6 +40,33 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function normalizeAssignedPropertyIds(value: unknown) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new AppError("assignedPropertyIds must be an array of property IDs", 400, "VALIDATION_ERROR");
+  const uniq = new Set<string>();
+  for (const id of value) {
+    if (typeof id !== "string" || !id.trim()) {
+      throw new AppError("assignedPropertyIds must contain valid property IDs", 400, "VALIDATION_ERROR");
+    }
+    uniq.add(id.trim());
+  }
+  return Array.from(uniq);
+}
+
+async function validateAssignedPropertyIds(tenantId: string, propertyIds: string[]) {
+  if (propertyIds.length === 0) {
+    throw new AppError("At least one property must be assigned", 400, "VALIDATION_ERROR");
+  }
+
+  const count = await prisma.property.count({
+    where: { tenantId, id: { in: propertyIds } },
+  });
+
+  if (count !== propertyIds.length) {
+    throw new AppError("One or more assigned properties are invalid for this tenant", 400, "VALIDATION_ERROR");
+  }
+}
+
 function safeUser(u: any) {
   return {
     id: u.id,
@@ -49,6 +76,7 @@ function safeUser(u: any) {
     status: u.status,
     fullName: u.fullName,
     phone: u.phone,
+    assignedPropertyIds: Array.isArray(u.assignedPropertyIds) ? u.assignedPropertyIds : [],
     createdAt: u.createdAt,
     updatedAt: u.updatedAt,
   };
@@ -113,6 +141,7 @@ export async function listUsers(req: Request, res: Response, next: NextFunction)
           status: true,
           fullName: true,
           phone: true,
+          assignedPropertyIds: true,
           createdAt: true,
           updatedAt: true,
           // status: true, // ✅ uncomment only if you added status to Prisma
@@ -151,6 +180,7 @@ export async function getUserById(req: Request, res: Response, next: NextFunctio
         status: true,
         fullName: true,
         phone: true,
+        assignedPropertyIds: true,
         createdAt: true,
         updatedAt: true,
         // status: true, // ✅ uncomment only if you added status
@@ -180,12 +210,13 @@ export async function createStaffOrManager(req: Request, res: Response, next: Ne
     const actor = getActor(req);
     const tenantId = getTenant(req);
 
-    const { email, role, fullName, phone, tempPassword } = req.body as {
+    const { email, role, fullName, phone, tempPassword, assignedPropertyIds } = req.body as {
       email?: string;
       role?: Role;
       fullName?: string;
       phone?: string;
       tempPassword?: string;
+      assignedPropertyIds?: unknown;
     };
 
     if (!email || !role) throw new AppError("email and role are required", 400, "VALIDATION_ERROR");
@@ -195,6 +226,24 @@ export async function createStaffOrManager(req: Request, res: Response, next: Ne
 
     if (!canAssignRole(actor.role, role)) {
       throw new AppError("Insufficient permissions to create this role", 403, "FORBIDDEN");
+    }
+
+    const normalizedAssigned = normalizeAssignedPropertyIds(assignedPropertyIds);
+    if (normalizedAssigned !== undefined && actor.role !== "ADMIN") {
+      throw new AppError("Only ADMIN can assign properties", 403, "FORBIDDEN");
+    }
+    let effectiveAssigned: string[] = [];
+    if (role === "MANAGER" || role === "STAFF") {
+      if (actor.role === "ADMIN") {
+        effectiveAssigned = normalizedAssigned ?? [];
+        await validateAssignedPropertyIds(tenantId, effectiveAssigned);
+      } else {
+        const actorUser = await prisma.user.findFirst({
+          where: { id: actor.userId, tenantId },
+          select: { assignedPropertyIds: true },
+        });
+        effectiveAssigned = Array.isArray(actorUser?.assignedPropertyIds) ? actorUser!.assignedPropertyIds : [];
+      }
     }
 
     const existing = await prisma.user.findUnique({
@@ -220,6 +269,7 @@ export async function createStaffOrManager(req: Request, res: Response, next: Ne
         fullName: fullName?.trim() || null,
         phone: phone?.trim() || null,
         passwordHash,
+        assignedPropertyIds: role === "MANAGER" || role === "STAFF" ? effectiveAssigned : [],
       },
       select: {
         id: true,
@@ -229,6 +279,7 @@ export async function createStaffOrManager(req: Request, res: Response, next: Ne
         status: true,
         fullName: true,
         phone: true,
+        assignedPropertyIds: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -266,12 +317,27 @@ export async function updateUserById(req: Request, res: Response, next: NextFunc
       throw new AppError("Insufficient permissions to update this user", 403, "FORBIDDEN");
     }
 
-    const { fullName, phone, role } = req.body as { fullName?: string; phone?: string; role?: Role };
+    const { fullName, phone, role, assignedPropertyIds } = req.body as {
+      fullName?: string;
+      phone?: string;
+      role?: Role;
+      assignedPropertyIds?: unknown;
+    };
 
     if (role !== undefined) {
       if (!["ADMIN", "MANAGER", "STAFF"].includes(role)) throw new AppError("Invalid role", 400, "VALIDATION_ERROR");
       if (!canAssignRole(actor.role, role)) throw new AppError("Insufficient permissions to assign this role", 403, "FORBIDDEN");
       if (actor.userId === id) throw new AppError("You cannot change your own role", 400, "VALIDATION_ERROR");
+    }
+
+    const normalizedAssigned = normalizeAssignedPropertyIds(assignedPropertyIds);
+    if (normalizedAssigned !== undefined && actor.role !== "ADMIN") {
+      throw new AppError("Only ADMIN can assign properties", 403, "FORBIDDEN");
+    }
+
+    const nextRole = role ?? target.role;
+    if ((nextRole === "MANAGER" || nextRole === "STAFF") && normalizedAssigned !== undefined) {
+      await validateAssignedPropertyIds(tenantId, normalizedAssigned);
     }
 
     const updated = await prisma.user.update({
@@ -280,6 +346,8 @@ export async function updateUserById(req: Request, res: Response, next: NextFunc
         ...(fullName !== undefined ? { fullName: fullName?.trim() || null } : {}),
         ...(phone !== undefined ? { phone: phone?.trim() || null } : {}),
         ...(role !== undefined ? { role } : {}),
+        ...(normalizedAssigned !== undefined ? { assignedPropertyIds: normalizedAssigned } : {}),
+        ...(role === "ADMIN" ? { assignedPropertyIds: [] } : {}),
       },
       select: {
         id: true,
@@ -289,6 +357,7 @@ export async function updateUserById(req: Request, res: Response, next: NextFunc
         status: true,
         fullName: true,
         phone: true,
+        assignedPropertyIds: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -325,6 +394,7 @@ export async function updateMyProfile(req: Request, res: Response, next: NextFun
         status: true,
         fullName: true,
         phone: true,
+        assignedPropertyIds: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -416,6 +486,7 @@ export async function disableUser(req: Request, res: Response, next: NextFunctio
         status: true,
         fullName: true,
         phone: true,
+        assignedPropertyIds: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -454,6 +525,7 @@ export async function enableUser(req: Request, res: Response, next: NextFunction
         status: true,
         fullName: true,
         phone: true,
+        assignedPropertyIds: true,
         createdAt: true,
         updatedAt: true,
       },

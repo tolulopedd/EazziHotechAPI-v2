@@ -156,6 +156,7 @@ model User {
   phone        String?
   passwordHash String
   role         UserRole @default(STAFF)
+  assignedPropertyIds String[] @default([])
 
   status       UserStatus @default(ACTIVE)
 

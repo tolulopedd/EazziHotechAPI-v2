@@ -16,6 +16,7 @@ import {
   storageObjectExists,
   uploadBufferToStorage,
 } from "../../common/storage/object-storage";
+import { resolvePropertyScope, scopedBookingWhere, scopedUnitWhere } from "../../common/authz/property-scope";
 
 /**
  * Helpers
@@ -76,6 +77,7 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const user = req.user;
+  const propertyScope = await resolvePropertyScope(req);
 
   const {
     unitId,
@@ -100,7 +102,10 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
     throw new AppError("currency must be a string", 400, "VALIDATION_ERROR");
   }
 
-  const unit = await db.unit.findById(unitId);
+  const unit = await db.raw.unit.findFirst({
+    where: { id: unitId, tenantId, ...scopedUnitWhere(propertyScope) },
+    select: { id: true },
+  });
   if (!unit) throw new AppError("Unit not found", 404, "UNIT_NOT_FOUND");
 
   // Overlap check:
@@ -264,6 +269,7 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
 export const listBookings = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const { unitId, status, paymentStatus, from, to, q, limit = "50", cursor, activeOnly } = req.query as Record<
     string,
@@ -272,7 +278,13 @@ export const listBookings = asyncHandler(async (req: Request, res: Response) => 
 
   const take = Math.min(parseInt(limit, 10) || 50, 200);
 
-  const where: any = { tenantId, ...(unitId ? { unitId } : {}), ...(status ? { status } : {}), ...(paymentStatus ? { paymentStatus } : {}) };
+  const where: any = {
+    tenantId,
+    ...scopedBookingWhere(propertyScope),
+    ...(unitId ? { unitId } : {}),
+    ...(status ? { status } : {}),
+    ...(paymentStatus ? { paymentStatus } : {}),
+  };
   if (activeOnly === "1" || activeOnly === "true") {
     where.status = { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] };
   }
@@ -336,6 +348,7 @@ export const listBookings = asyncHandler(async (req: Request, res: Response) => 
 export const arrivalsToday = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const start = new Date();
   start.setHours(0, 0, 0, 0);
@@ -346,6 +359,7 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
   const bookings = await db.raw.booking.findMany({
     where: {
       tenantId,
+      ...scopedBookingWhere(propertyScope),
       status: "CONFIRMED",
       checkIn: { gte: start, lte: end },
     },
@@ -391,6 +405,7 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
 export const arrivalsWeek = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const start = new Date();
   start.setHours(0, 0, 0, 0);
@@ -401,6 +416,7 @@ export const arrivalsWeek = asyncHandler(async (req: Request, res: Response) => 
   const bookings = await db.raw.booking.findMany({
     where: {
       tenantId,
+      ...scopedBookingWhere(propertyScope),
       status: { in: ["PENDING", "CONFIRMED"] },
       checkIn: { gte: start, lt: end },
     },
@@ -446,12 +462,14 @@ export const arrivalsWeek = asyncHandler(async (req: Request, res: Response) => 
 export const inHouse = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const search = String(req.query.search || "").trim();
 
   const bookings = await db.raw.booking.findMany({
     where: {
       tenantId,
+      ...scopedBookingWhere(propertyScope),
       status: "CHECKED_IN",
       ...(search
         ? {
@@ -521,6 +539,7 @@ export const inHouse = asyncHandler(async (req: Request, res: Response) => {
 export const checkInBooking = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const bookingId = normalizeOptionalString(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
   if (!bookingId) throw new AppError("booking id is required", 400, "VALIDATION_ERROR");
@@ -555,7 +574,7 @@ export const checkInBooking = asyncHandler(async (req: Request, res: Response) =
 
   const updated = await db.raw.$transaction(async (tx) => {
     const existing = await tx.booking.findFirst({
-      where: { tenantId, id: bookingId },
+      where: { tenantId, id: bookingId, ...scopedBookingWhere(propertyScope) },
       select: {
         id: true,
         status: true,
@@ -641,13 +660,14 @@ export const uploadGuestPhoto = asyncHandler(async (req: Request, res: Response)
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const bookingId = req.params.id;
+  const propertyScope = await resolvePropertyScope(req);
 
   const file = (req as any).file as Express.Multer.File | undefined;
   if (!file) throw new AppError("No photo uploaded", 400, "VALIDATION_ERROR");
 
   // Ensure booking belongs to tenant
   const booking = await db.raw.booking.findFirst({
-    where: { id: bookingId, tenantId },
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
     select: { id: true },
   });
   if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
@@ -697,6 +717,7 @@ export const presignGuestPhotoUpload = asyncHandler(async (req: Request, res: Re
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const bookingId = req.params.id;
+  const propertyScope = await resolvePropertyScope(req);
   const { contentType, fileSize } = req.body ?? {};
 
   if (!isS3StorageEnabled()) {
@@ -713,7 +734,7 @@ export const presignGuestPhotoUpload = asyncHandler(async (req: Request, res: Re
   }
 
   const booking = await db.raw.booking.findFirst({
-    where: { id: bookingId, tenantId },
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
     select: { id: true },
   });
   if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
@@ -746,6 +767,7 @@ export const confirmGuestPhotoUpload = asyncHandler(async (req: Request, res: Re
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const bookingId = req.params.id;
+  const propertyScope = await resolvePropertyScope(req);
   const { photoKey, mime, size } = req.body ?? {};
 
   if (!photoKey || typeof photoKey !== "string") {
@@ -770,7 +792,7 @@ export const confirmGuestPhotoUpload = asyncHandler(async (req: Request, res: Re
   }
 
   const booking = await db.raw.booking.findFirst({
-    where: { id: bookingId, tenantId },
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
     select: { id: true },
   });
   if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
@@ -805,6 +827,7 @@ export const recordBookingPayment = asyncHandler(async (req: Request, res: Respo
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const user = req.user;
+  const propertyScope = await resolvePropertyScope(req);
 
   const bookingId = req.params.id;
   const { amount, currency, reference, notes } = req.body ?? {};
@@ -827,7 +850,7 @@ export const recordBookingPayment = asyncHandler(async (req: Request, res: Respo
 
   const result = await db.raw.$transaction(async (tx) => {
     const booking = await tx.booking.findFirst({
-      where: { id: bookingId, tenantId },
+      where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
       select: {
         id: true,
         status: true,
@@ -934,10 +957,12 @@ export const recordBookingPayment = asyncHandler(async (req: Request, res: Respo
 export const pendingPayments = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const bookings = await db.raw.booking.findMany({
     where: {
       tenantId,
+      ...scopedBookingWhere(propertyScope),
       status: { notIn: ["CANCELLED", "NO_SHOW", "CHECKED_OUT"] },
     },
     select: {

@@ -15,6 +15,7 @@ declare global {
         userId: string;
         tenantId: string;
         role: UserRole;
+        assignedPropertyIds?: string[];
         iat?: number;
         exp?: number;
       };

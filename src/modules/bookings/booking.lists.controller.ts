@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { asyncHandler } from "../../common/utils/asyncHandler";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { createPresignedGetUrlFromKey, publicUrlFromKey } from "../../common/storage/object-storage";
+import { resolvePropertyScope, scopedBookingWhere } from "../../common/authz/property-scope";
 
 /**
  * GET /api/bookings/arrivals/today
@@ -9,6 +10,7 @@ import { createPresignedGetUrlFromKey, publicUrlFromKey } from "../../common/sto
 export const arrivalsToday = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const start = new Date();
   start.setHours(0, 0, 0, 0);
@@ -19,6 +21,7 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
   const bookings = await db.raw.booking.findMany({
     where: {
       tenantId,
+      ...scopedBookingWhere(propertyScope),
       status: "CONFIRMED",
       checkIn: {
         gte: start,
@@ -63,12 +66,14 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
 export const inHouse = asyncHandler(async (req: Request, res: Response) => {
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
 
   const search = String(req.query.search || "").trim();
 
   const bookings = await db.raw.booking.findMany({
     where: {
       tenantId,
+      ...scopedBookingWhere(propertyScope),
       status: "CHECKED_IN",
       ...(search
         ? {
