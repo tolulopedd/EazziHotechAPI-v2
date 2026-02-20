@@ -8,7 +8,7 @@ export const propertyRoutes = Router();
 propertyRoutes.post(
   "/properties",
   requireAuth,
-  requireRole("ADMIN", "MANAGER"),
+  requireRole("ADMIN"),
   createProperty
 );
 

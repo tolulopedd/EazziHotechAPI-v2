@@ -23,7 +23,7 @@ export const reportsRoutes = Router();
 reportsRoutes.get(
   "/reports/bookings-payments",
   requireAuth,
-  requireRole("ADMIN", "MANAGER"),
+  requireRole("ADMIN", "MANAGER", "STAFF"),
   bookingsPaymentsReport
 );
 
@@ -34,7 +34,7 @@ reportsRoutes.get(
 reportsRoutes.get(
   "/reports/bookings-payments/daily.csv",
   requireAuth,
-  requireRole("ADMIN", "MANAGER"),
+  requireRole("ADMIN", "MANAGER", "STAFF"),
   exportBookingsPaymentsDailyCsv
 );
 
@@ -45,6 +45,6 @@ reportsRoutes.get(
 reportsRoutes.get(
   "/reports/bookings-payments/outstanding.csv",
   requireAuth,
-  requireRole("ADMIN", "MANAGER"),
+  requireRole("ADMIN", "MANAGER", "STAFF"),
   exportBookingsPaymentsOutstandingCsv
 );

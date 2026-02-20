@@ -7,6 +7,11 @@ import { resolvePropertyScope, scopedPropertyWhere } from "../../common/authz/pr
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 
 export const createProperty = asyncHandler(async (req: Request, res: Response) => {
+  const actorRole = ((req as any).user?.role ?? "") as string;
+  if (actorRole !== "ADMIN") {
+    throw new AppError("Only admins can create properties", 403, "FORBIDDEN");
+  }
+
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
 
