@@ -27,6 +27,15 @@ function toBoolean(value: unknown) {
   return false;
 }
 
+function toOptionalDate(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const d = new Date(String(value));
+  if (Number.isNaN(d.getTime())) {
+    throw new AppError("Invalid date value", 400, "VALIDATION_ERROR");
+  }
+  return d;
+}
+
 function computeTotalBillFromBaseAndCharges(
   baseAmount: number,
   charges: Array<{ amount: any; type?: string | null }> | null | undefined
@@ -486,6 +495,196 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
   }
 
   res.status(201).json(result);
+});
+
+/**
+ * VISITOR LOG: list visitors for an in-house booking
+ */
+export const listBookingVisitors = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const { bookingId } = req.params;
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: { id: true, status: true, guestName: true },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+
+  const visitors = await db.raw.bookingVisitor.findMany({
+    where: { tenantId, bookingId },
+    orderBy: [{ checkInAt: "desc" }, { createdAt: "desc" }],
+  });
+
+  res.json({ booking, visitors });
+});
+
+/**
+ * VISITOR LOG: add visitor for checked-in guest
+ */
+export const addBookingVisitor = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const user = (req as any).user;
+  const { bookingId } = req.params;
+  const { fullName, phone, idType, idNumber, purpose, isOvernight, checkInAt, notes } = req.body ?? {};
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+
+  const name = String(fullName || "").trim();
+  if (!name) throw new AppError("fullName is required", 400, "VALIDATION_ERROR");
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: { id: true, status: true },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+  if (booking.status !== "CHECKED_IN") {
+    throw new AppError("Visitors can be logged only for checked-in bookings", 409, "INVALID_BOOKING_STATE");
+  }
+
+  const visitor = await db.raw.bookingVisitor.create({
+    data: {
+      tenantId,
+      bookingId,
+      fullName: name,
+      phone: toOptionalString(phone),
+      idType: toOptionalString(idType),
+      idNumber: toOptionalString(idNumber),
+      purpose: toOptionalString(purpose),
+      isOvernight: toBoolean(isOvernight),
+      checkInAt: toOptionalDate(checkInAt) ?? new Date(),
+      notes: toOptionalString(notes),
+      createdByUserId: user?.userId ?? null,
+    },
+  });
+
+  logger.info(
+    {
+      event: "audit.booking_visitor_added",
+      requestId: req.requestId,
+      tenantId,
+      bookingId,
+      visitorId: visitor.id,
+      actorUserId: user?.userId ?? null,
+    },
+    "Audit booking visitor added"
+  );
+
+  res.status(201).json({ visitor });
+});
+
+/**
+ * VISITOR LOG: update visitor details
+ */
+export const updateBookingVisitor = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const user = (req as any).user;
+  const { bookingId, visitorId } = req.params;
+  if (!bookingId || !visitorId) {
+    throw new AppError("bookingId and visitorId are required", 400, "VALIDATION_ERROR");
+  }
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: { id: true },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+
+  const existing = await db.raw.bookingVisitor.findFirst({
+    where: { id: visitorId, tenantId, bookingId },
+    select: { id: true },
+  });
+  if (!existing) throw new AppError("Visitor not found", 404, "VISITOR_NOT_FOUND");
+
+  const payload = req.body ?? {};
+  const nextName =
+    payload.fullName === undefined ? undefined : String(payload.fullName || "").trim();
+  if (nextName !== undefined && !nextName) {
+    throw new AppError("fullName cannot be empty", 400, "VALIDATION_ERROR");
+  }
+
+  const visitor = await db.raw.bookingVisitor.update({
+    where: { id: visitorId },
+    data: {
+      ...(nextName !== undefined ? { fullName: nextName } : {}),
+      ...(payload.phone !== undefined ? { phone: toOptionalString(payload.phone) } : {}),
+      ...(payload.idType !== undefined ? { idType: toOptionalString(payload.idType) } : {}),
+      ...(payload.idNumber !== undefined ? { idNumber: toOptionalString(payload.idNumber) } : {}),
+      ...(payload.purpose !== undefined ? { purpose: toOptionalString(payload.purpose) } : {}),
+      ...(payload.isOvernight !== undefined ? { isOvernight: toBoolean(payload.isOvernight) } : {}),
+      ...(payload.checkInAt !== undefined ? { checkInAt: toOptionalDate(payload.checkInAt) } : {}),
+      ...(payload.checkOutAt !== undefined ? { checkOutAt: toOptionalDate(payload.checkOutAt) } : {}),
+      ...(payload.notes !== undefined ? { notes: toOptionalString(payload.notes) } : {}),
+    },
+  });
+
+  logger.info(
+    {
+      event: "audit.booking_visitor_updated",
+      requestId: req.requestId,
+      tenantId,
+      bookingId,
+      visitorId,
+      actorUserId: user?.userId ?? null,
+    },
+    "Audit booking visitor updated"
+  );
+
+  res.json({ visitor });
+});
+
+/**
+ * VISITOR LOG: mark visitor as left
+ */
+export const checkoutBookingVisitor = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const user = (req as any).user;
+  const { bookingId, visitorId } = req.params;
+  const { checkOutAt } = req.body ?? {};
+  if (!bookingId || !visitorId) {
+    throw new AppError("bookingId and visitorId are required", 400, "VALIDATION_ERROR");
+  }
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: { id: true },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+
+  const visitor = await db.raw.bookingVisitor.findFirst({
+    where: { id: visitorId, tenantId, bookingId },
+    select: { id: true, checkOutAt: true },
+  });
+  if (!visitor) throw new AppError("Visitor not found", 404, "VISITOR_NOT_FOUND");
+  if (visitor.checkOutAt) {
+    throw new AppError("Visitor already checked out", 409, "VISITOR_ALREADY_CHECKED_OUT");
+  }
+
+  const updated = await db.raw.bookingVisitor.update({
+    where: { id: visitorId },
+    data: { checkOutAt: toOptionalDate(checkOutAt) ?? new Date() },
+  });
+
+  logger.info(
+    {
+      event: "audit.booking_visitor_checked_out",
+      requestId: req.requestId,
+      tenantId,
+      bookingId,
+      visitorId,
+      actorUserId: user?.userId ?? null,
+    },
+    "Audit booking visitor checked out"
+  );
+
+  res.json({ visitor: updated });
 });
 
 /**

@@ -225,3 +225,6 @@ dist
 
 # logs
 *.log
+
+# local uploads (dev fallback storage)
+uploads/

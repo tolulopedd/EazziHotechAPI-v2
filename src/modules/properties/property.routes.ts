@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createProperty, listProperties } from "./property.controller";
+import { createProperty, listProperties, updateProperty } from "./property.controller";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requireRole } from "../../middleware/role.middleware";
 
@@ -13,3 +13,10 @@ propertyRoutes.post(
 );
 
 propertyRoutes.get("/properties", requireAuth, listProperties);
+
+propertyRoutes.patch(
+  "/properties/:propertyId",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER"),
+  updateProperty
+);

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createUnit, listUnitsByProperty } from "./unit.controller";
+import { createUnit, listUnitsByProperty, updateUnit } from "./unit.controller";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requireRole } from "../../middleware/role.middleware";
 import { listUnits } from "./unit.controller";
@@ -19,4 +19,11 @@ unitRoutes.get(
   requireAuth,
   requireRole("ADMIN", "MANAGER"),
   listUnits
+);
+
+unitRoutes.patch(
+  "/units/:unitId",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER"),
+  updateUnit
 );

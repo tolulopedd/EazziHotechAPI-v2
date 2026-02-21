@@ -127,3 +127,42 @@ export const listProperties = asyncHandler(async (req: Request, res: Response) =
 
   res.json({ properties: items });
 });
+
+export const updateProperty = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const { propertyId } = req.params;
+  if (!propertyId) throw new AppError("propertyId is required", 400, "VALIDATION_ERROR");
+
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const allowedWhere = scopedPropertyWhere(propertyScope) as any;
+  const allowedIds = allowedWhere?.id?.in as string[] | undefined;
+  if (Array.isArray(allowedIds) && !allowedIds.includes(propertyId)) {
+    throw new AppError("You do not have access to this property", 403, "PROPERTY_SCOPE_FORBIDDEN");
+  }
+
+  const property = await db.raw.property.findFirst({
+    where: { id: propertyId, tenantId },
+    select: { id: true },
+  });
+  if (!property) throw new AppError("Property not found", 404, "PROPERTY_NOT_FOUND");
+
+  const { name, address, type } = req.body ?? {};
+  if (name !== undefined && (!String(name).trim() || typeof name !== "string")) {
+    throw new AppError("name must be a non-empty string", 400, "VALIDATION_ERROR");
+  }
+  if (type !== undefined && type !== "HOTEL" && type !== "SHORTLET") {
+    throw new AppError("type must be HOTEL or SHORTLET", 400, "VALIDATION_ERROR");
+  }
+
+  const updated = await db.raw.property.update({
+    where: { id: propertyId },
+    data: {
+      ...(name !== undefined ? { name: String(name).trim() } : {}),
+      ...(address !== undefined ? { address: address ? String(address).trim() : null } : {}),
+      ...(type !== undefined ? { type } : {}),
+    },
+  });
+
+  res.json({ property: updated });
+});

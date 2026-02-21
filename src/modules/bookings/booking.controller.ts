@@ -70,6 +70,55 @@ function computeTotalBillFromBaseAndCharges(
   return hasRoomCharge ? chargesTotal : Math.max(0, baseAmount) + chargesTotal;
 }
 
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function addDays(d: Date, days: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+}
+
+function unitNightlyRateForDate(unit: any, day: Date) {
+  const base = Number(unit.basePrice ?? 0);
+  if (!Number.isFinite(base) || base <= 0) return 0;
+
+  if (!unit.discountType || !unit.discountValue || !unit.discountStart || !unit.discountEnd) {
+    return base;
+  }
+
+  const d = startOfDay(day).getTime();
+  const s = startOfDay(new Date(unit.discountStart)).getTime();
+  const e = startOfDay(new Date(unit.discountEnd)).getTime();
+  if (d < s || d > e) return base;
+
+  const discountValue = Number(unit.discountValue ?? 0);
+  if (!Number.isFinite(discountValue) || discountValue <= 0) return base;
+
+  if (unit.discountType === "PERCENT") {
+    const pct = Math.max(0, Math.min(100, discountValue));
+    return Math.max(0, base * (1 - pct / 100));
+  }
+  if (unit.discountType === "FIXED_PRICE") {
+    return Math.max(0, discountValue);
+  }
+  return base;
+}
+
+function calculateBookingTotalFromUnitRate(unit: any, checkIn: Date, checkOut: Date) {
+  const s = startOfDay(checkIn);
+  const e = startOfDay(checkOut);
+  const nights = Math.max(1, Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)));
+  let total = 0;
+  for (let i = 0; i < nights; i += 1) {
+    total += unitNightlyRateForDate(unit, addDays(s, i));
+  }
+  return Math.max(0, Number(total.toFixed(2)));
+}
+
 /**
  * Controllers
  */
@@ -104,9 +153,29 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
 
   const unit = await db.raw.unit.findFirst({
     where: { id: unitId, tenantId, ...scopedUnitWhere(propertyScope) },
-    select: { id: true },
+    select: {
+      id: true,
+      basePrice: true,
+      discountType: true,
+      discountValue: true,
+      discountStart: true,
+      discountEnd: true,
+    },
   });
   if (!unit) throw new AppError("Unit not found", 404, "UNIT_NOT_FOUND");
+
+  const calculatedTotal = calculateBookingTotalFromUnitRate(unit, start, end);
+  if ((totalAmount === undefined || totalAmount === null || !String(totalAmount).trim()) && calculatedTotal <= 0) {
+    throw new AppError(
+      "Unit base rate is not set. Set unit base price or provide totalAmount.",
+      400,
+      "UNIT_BASE_RATE_MISSING"
+    );
+  }
+  const bookingTotalAmount =
+    totalAmount !== undefined && totalAmount !== null && String(totalAmount).trim()
+      ? String(totalAmount).trim()
+      : calculatedTotal.toFixed(2);
 
   // Overlap check:
   const conflict = await db.booking.findMany({
@@ -162,7 +231,7 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
         idIssuedBy: guest.idIssuedBy ?? null,
         vehiclePlate: guest.vehiclePlate ?? null,
 
-        totalAmount: totalAmount ?? null,
+        totalAmount: bookingTotalAmount,
         currency: currency ?? "NGN",
         status: "PENDING",
         paymentStatus: "UNPAID",
@@ -174,14 +243,14 @@ export const createBooking = asyncHandler(async (req: Request, res: Response) =>
     });
 
     // ✅ Auto-create ROOM charge if totalAmount is present
-    if (totalAmount) {
+    if (bookingTotalAmount) {
       await tx.bookingCharge.create({
         data: {
           tenantId,
           bookingId: booking.id,
           type: "ROOM",
           title: "Room charge",
-          amount: totalAmount,
+          amount: bookingTotalAmount,
           currency: currency ?? booking.currency ?? "NGN",
           status: "OPEN",
         },

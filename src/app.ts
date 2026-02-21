@@ -22,6 +22,7 @@ import { tenantRoutes } from "./modules/tenant/tenant.routes";
 import { reportsRoutes } from "./modules/reports/reports.routes";
 import { guestRoutes } from "./modules/guests/guest.routes";
 import { leadsRoutes } from "./modules/leads/leads.routes";
+import { newsRoutes } from "./modules/news/news.routes";
 
 
 // ✅ NEW: public routes (tenant discovery)
@@ -72,6 +73,7 @@ app.use(
   app.use("/api", reportsRoutes);
   app.use("/api", guestRoutes);
   app.use("/api", leadsRoutes);
+  app.use("/api", newsRoutes);
 
   app.use((_req, res) =>
     res.status(404).json({

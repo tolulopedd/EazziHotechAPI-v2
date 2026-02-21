@@ -75,6 +75,13 @@ Email domain:
 - Configure SPF + DKIM + DMARC records.
 - Use domain sender (not gmail/yahoo) for production delivery.
 
+File storage:
+- Use object storage in production (`STORAGE_DRIVER=S3`).
+- Configure `S3_REGION`, `S3_BUCKET`, and optionally `S3_ENDPOINT` (for R2-compatible API).
+- Set `S3_PUBLIC_BASE_URL` to your CDN/public bucket URL.
+- Configure bucket CORS to allow `PUT` from your frontend origin (`https://app.eazzihotech.com`) with `Content-Type` header.
+- Keep `STORAGE_DRIVER=LOCAL` only for local development.
+
 ## 5) Integrity + readiness checks
 Command:
 - `npm run check:readiness`

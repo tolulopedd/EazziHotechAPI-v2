@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import type { NewsType } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../../prisma/client";
 import { asyncHandler } from "../../common/utils/asyncHandler";
@@ -63,6 +64,101 @@ export const listTenants = asyncHandler(async (req: Request, res: Response) => {
 
 const recentSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(8),
+});
+
+const publicNewsSchema = z.object({
+  type: z.enum(["ARTICLE", "VIDEO", "FEATURE", "ANNOUNCEMENT"]).optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  search: z.string().max(120).optional(),
+});
+
+export const listPublicNews = asyncHandler(async (req: Request, res: Response) => {
+  const parsed = publicNewsSchema.safeParse({
+    type: req.query.type,
+    limit: req.query.limit,
+    search: String(req.query.search || "").trim() || undefined,
+  });
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: { code: "VALIDATION_ERROR", message: "Invalid news query parameters" },
+    });
+  }
+
+  const where: any = {
+    status: "PUBLISHED",
+    publishedAt: { lte: new Date() },
+    ...(parsed.data.type ? { type: parsed.data.type as NewsType } : {}),
+    ...(parsed.data.search
+      ? {
+          OR: [
+            { title: { contains: parsed.data.search, mode: "insensitive" } },
+            { excerpt: { contains: parsed.data.search, mode: "insensitive" } },
+            { content: { contains: parsed.data.search, mode: "insensitive" } },
+          ],
+        }
+      : {}),
+  };
+
+  const rows = await prisma.newsItem.findMany({
+    where,
+    orderBy: [{ isFeatured: "desc" }, { publishedAt: "desc" }, { createdAt: "desc" }],
+    take: parsed.data.limit,
+    select: {
+      id: true,
+      title: true,
+      slug: true,
+      type: true,
+      excerpt: true,
+      content: true,
+      externalUrl: true,
+      videoUrl: true,
+      thumbnailUrl: true,
+      isFeatured: true,
+      publishedAt: true,
+      createdAt: true,
+    },
+  });
+
+  res.json({ news: rows });
+});
+
+export const getPublicNewsBySlug = asyncHandler(async (req: Request, res: Response) => {
+  const slug = String(req.params.slug || "").trim().toLowerCase();
+  if (!slug) {
+    return res.status(400).json({
+      error: { code: "VALIDATION_ERROR", message: "News slug is required" },
+    });
+  }
+
+  const row = await prisma.newsItem.findFirst({
+    where: {
+      slug,
+      status: "PUBLISHED",
+      publishedAt: { lte: new Date() },
+    },
+    select: {
+      id: true,
+      title: true,
+      slug: true,
+      type: true,
+      excerpt: true,
+      content: true,
+      externalUrl: true,
+      videoUrl: true,
+      thumbnailUrl: true,
+      isFeatured: true,
+      publishedAt: true,
+      createdAt: true,
+    },
+  });
+
+  if (!row) {
+    return res.status(404).json({
+      error: { code: "NOT_FOUND", message: "News article not found" },
+    });
+  }
+
+  res.json({ news: row });
 });
 
 export const listRecentTenants = asyncHandler(async (req: Request, res: Response) => {
