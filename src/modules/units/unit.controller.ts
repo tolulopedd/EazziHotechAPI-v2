@@ -198,3 +198,31 @@ export const updateUnit = asyncHandler(async (req: Request, res: Response) => {
 
   res.json({ unit: updated });
 });
+
+export const deleteUnit = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const { propertyId, unitId } = req.params;
+  if (!propertyId || !unitId) {
+    throw new AppError("propertyId and unitId are required", 400, "VALIDATION_ERROR");
+  }
+
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  assertPropertyInScope(propertyScope, propertyId);
+
+  const unit = await db.raw.unit.findFirst({
+    where: { id: unitId, propertyId, tenantId },
+    select: { id: true },
+  });
+  if (!unit) throw new AppError("Unit not found", 404, "UNIT_NOT_FOUND");
+
+  const bookingCount = await db.raw.booking.count({
+    where: { tenantId, unitId },
+  });
+  if (bookingCount > 0) {
+    throw new AppError("Cannot delete unit with existing bookings", 409, "UNIT_IN_USE");
+  }
+
+  await db.raw.unit.delete({ where: { id: unitId } });
+  res.status(204).send();
+});

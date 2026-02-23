@@ -166,3 +166,32 @@ export const updateProperty = asyncHandler(async (req: Request, res: Response) =
 
   res.json({ property: updated });
 });
+
+export const deleteProperty = asyncHandler(async (req: Request, res: Response) => {
+  const actorRole = ((req as any).user?.role ?? "") as string;
+  if (actorRole !== "ADMIN") {
+    throw new AppError("Only admins can delete properties", 403, "FORBIDDEN");
+  }
+
+  const tenantId = req.tenantId!;
+  const { propertyId } = req.params;
+  if (!propertyId) throw new AppError("propertyId is required", 400, "VALIDATION_ERROR");
+
+  const db = prismaForTenant(tenantId);
+
+  const property = await db.raw.property.findFirst({
+    where: { id: propertyId, tenantId },
+    select: { id: true },
+  });
+  if (!property) throw new AppError("Property not found", 404, "PROPERTY_NOT_FOUND");
+
+  const unitCount = await db.raw.unit.count({
+    where: { tenantId, propertyId },
+  });
+  if (unitCount > 0) {
+    throw new AppError("Cannot delete property with existing units", 409, "PROPERTY_HAS_UNITS");
+  }
+
+  await db.raw.property.delete({ where: { id: propertyId } });
+  res.status(204).send();
+});

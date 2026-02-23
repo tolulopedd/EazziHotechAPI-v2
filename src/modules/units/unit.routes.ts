@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createUnit, listUnitsByProperty, updateUnit } from "./unit.controller";
+import { createUnit, deleteUnit, listUnitsByProperty, updateUnit } from "./unit.controller";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requireRole } from "../../middleware/role.middleware";
 import { listUnits } from "./unit.controller";
@@ -26,4 +26,11 @@ unitRoutes.patch(
   requireAuth,
   requireRole("ADMIN", "MANAGER"),
   updateUnit
+);
+
+unitRoutes.delete(
+  "/properties/:propertyId/units/:unitId",
+  requireAuth,
+  requireRole("ADMIN"),
+  deleteUnit
 );

@@ -39,6 +39,7 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
       },
       unit: {
         select: {
+          id: true,
           name: true,
           type: true,
           property: { select: { name: true } },

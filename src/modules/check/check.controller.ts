@@ -688,6 +688,125 @@ export const checkoutBookingVisitor = asyncHandler(async (req: Request, res: Res
 });
 
 /**
+ * STAY EXTENSION (for currently in-house booking)
+ */
+export const extendStay = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const user = (req as any).user;
+  const propertyScope = await resolvePropertyScope(req);
+  const { bookingId } = req.params;
+  const { newCheckOut, notes } = req.body ?? {};
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+  if (!newCheckOut) throw new AppError("newCheckOut is required", 400, "VALIDATION_ERROR");
+
+  const parsedNewCheckOut = toOptionalDate(newCheckOut);
+  if (!parsedNewCheckOut) throw new AppError("newCheckOut is invalid", 400, "VALIDATION_ERROR");
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: {
+      id: true,
+      unitId: true,
+      status: true,
+      checkIn: true,
+      checkOut: true,
+      totalAmount: true,
+      currency: true,
+      unit: { select: { name: true, property: { select: { name: true } } } },
+    },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+  if (booking.status !== "CHECKED_IN") {
+    throw new AppError("Stay extension allowed only for CHECKED_IN bookings", 409, "INVALID_BOOKING_STATE");
+  }
+  if (parsedNewCheckOut <= booking.checkOut) {
+    throw new AppError("newCheckOut must be after current checkOut", 400, "INVALID_EXTENSION_DATE");
+  }
+
+  // Prevent overlap with any other active reservation on this unit.
+  const conflict = await db.raw.booking.findFirst({
+    where: {
+      tenantId,
+      unitId: booking.unitId,
+      id: { not: booking.id },
+      status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] },
+      AND: [{ checkIn: { lt: parsedNewCheckOut } }, { checkOut: { gt: booking.checkIn } }],
+    },
+    select: { id: true, checkIn: true, checkOut: true },
+  });
+
+  if (conflict) {
+    throw new AppError("Unit is not available for the requested extension dates", 409, "UNIT_NOT_AVAILABLE");
+  }
+
+  const DAY_MS = 1000 * 60 * 60 * 24;
+  const originalNights = Math.max(1, Math.ceil((booking.checkOut.getTime() - booking.checkIn.getTime()) / DAY_MS));
+  const extensionNights = Math.max(1, Math.ceil((parsedNewCheckOut.getTime() - booking.checkOut.getTime()) / DAY_MS));
+  const baseAmount = Number(booking.totalAmount ?? 0);
+  const nightlyRate = originalNights > 0 ? baseAmount / originalNights : 0;
+  const extensionAmount = Math.max(0, nightlyRate * extensionNights);
+
+  const result = await db.raw.$transaction(async (tx) => {
+    const updatedBooking = await tx.booking.update({
+      where: { id: bookingId },
+      data: { checkOut: parsedNewCheckOut },
+      select: {
+        id: true,
+        checkIn: true,
+        checkOut: true,
+        status: true,
+        currency: true,
+      },
+    });
+
+    const charge = extensionAmount > 0
+      ? await tx.bookingCharge.create({
+          data: {
+            tenantId,
+            bookingId,
+            type: "EXTRA",
+            title: `Stay extension (${extensionNights} night${extensionNights === 1 ? "" : "s"})`,
+            amount: extensionAmount.toFixed(2),
+            currency: booking.currency ?? "NGN",
+            status: "OPEN",
+          },
+        })
+      : null;
+
+    return { booking: updatedBooking, charge };
+  });
+
+  logger.info(
+    {
+      event: "audit.stay_extended",
+      requestId: req.requestId,
+      tenantId,
+      bookingId,
+      actorUserId: user?.userId ?? null,
+      oldCheckOut: booking.checkOut,
+      newCheckOut: parsedNewCheckOut,
+      extensionNights,
+      extensionAmount: Number(extensionAmount.toFixed(2)),
+      notes: toOptionalString(notes),
+    },
+    "Audit stay extension"
+  );
+
+  res.status(201).json({
+    booking: result.booking,
+    extension: {
+      extensionNights,
+      nightlyRate: Number(nightlyRate.toFixed(2)),
+      extensionAmount: Number(extensionAmount.toFixed(2)),
+      currency: booking.currency ?? "NGN",
+      notes: toOptionalString(notes),
+    },
+    charge: result.charge,
+  });
+});
+
+/**
  * MANUAL OVERSTAY CHARGE
  */
 export const addOverstayCharge = asyncHandler(async (req: Request, res: Response) => {

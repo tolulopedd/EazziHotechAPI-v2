@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createProperty, listProperties, updateProperty } from "./property.controller";
+import { createProperty, deleteProperty, listProperties, updateProperty } from "./property.controller";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { requireRole } from "../../middleware/role.middleware";
 
@@ -19,4 +19,11 @@ propertyRoutes.patch(
   requireAuth,
   requireRole("ADMIN", "MANAGER"),
   updateProperty
+);
+
+propertyRoutes.delete(
+  "/properties/:propertyId",
+  requireAuth,
+  requireRole("ADMIN"),
+  deleteProperty
 );

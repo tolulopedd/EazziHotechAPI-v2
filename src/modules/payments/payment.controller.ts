@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import { asyncHandler } from "../../common/utils/asyncHandler";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { AppError } from "../../common/errors/AppError";
-import { resolvePropertyScope, scopedBookingWhere } from "../../common/authz/property-scope";
+import { resolvePropertyScope, scopedBookingWhere, scopedPaymentWhere } from "../../common/authz/property-scope";
 
 function computeTotalBillFromBaseAndCharges(
   baseAmount: number,
@@ -28,7 +28,7 @@ export const listPayments = asyncHandler(async (req: Request, res: Response) => 
 
   const where: any = {
     tenantId,
-    ...scopedBookingWhere(propertyScope),
+    ...scopedPaymentWhere(propertyScope),
     ...(status ? { status } : {}),
     ...(bookingId ? { bookingId } : {}),
     ...(q
@@ -186,7 +186,7 @@ export const confirmPayment = asyncHandler(async (req: Request, res: Response) =
 
   // Load payment + booking + confirmed payments + OPEN charges
   const payment = await db.raw.payment.findFirst({
-    where: { id: paymentId, tenantId, ...scopedBookingWhere(propertyScope) },
+    where: { id: paymentId, tenantId, ...scopedPaymentWhere(propertyScope) },
     include: {
       booking: {
         include: {
@@ -264,6 +264,35 @@ export const confirmPayment = asyncHandler(async (req: Request, res: Response) =
       totalAmount: totalBill,
       paidAmount: paidTotal,
       outstanding: Math.max(0, totalBill - paidTotal),
+    },
+  });
+});
+
+export const deletePendingPayment = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const { paymentId } = req.params;
+
+  const payment = await db.raw.payment.findFirst({
+    where: { id: paymentId, tenantId, ...scopedPaymentWhere(propertyScope) },
+    select: { id: true, status: true, bookingId: true, amount: true, currency: true },
+  });
+  if (!payment) throw new AppError("Payment not found", 404, "PAYMENT_NOT_FOUND");
+  if (payment.status !== "PENDING") {
+    throw new AppError("Only PENDING payments can be deleted", 400, "INVALID_STATUS");
+  }
+
+  await db.raw.payment.delete({ where: { id: paymentId } });
+
+  res.json({
+    ok: true,
+    deleted: {
+      id: payment.id,
+      bookingId: payment.bookingId,
+      amount: payment.amount,
+      currency: payment.currency,
+      status: payment.status,
     },
   });
 });

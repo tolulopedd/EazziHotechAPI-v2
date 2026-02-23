@@ -4,12 +4,14 @@ import { Router } from "express";
 import {
   confirmGuestPhotoUpload,
   createBooking,
+  deleteBooking,
   listBookings,
   arrivalsToday,
   arrivalsWeek,
   inHouse,
   presignGuestPhotoUpload,
   checkInBooking,
+  updateBooking,
   uploadGuestPhoto,
   recordBookingPayment,
 } from "./booking.controller";
@@ -27,7 +29,7 @@ export const bookingRoutes = Router();
 bookingRoutes.post(
   "/bookings",
   requireAuth,
-  requireRole("ADMIN", "MANAGER"),
+  requireRole("ADMIN", "MANAGER", "STAFF"),
   createBooking
 );
 
@@ -36,6 +38,20 @@ bookingRoutes.get(
   requireAuth,
   requireRole("ADMIN", "MANAGER", "STAFF"),
   listBookings
+);
+
+bookingRoutes.patch(
+  "/bookings/:id",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER"),
+  updateBooking
+);
+
+bookingRoutes.delete(
+  "/bookings/:id",
+  requireAuth,
+  requireRole("ADMIN"),
+  deleteBooking
 );
 
 /* =========================

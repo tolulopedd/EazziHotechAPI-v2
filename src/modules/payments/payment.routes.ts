@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   createManualPayment,
   confirmPayment,
+  deletePendingPayment,
   listPayments,
   listOutstandingBookings,   // ✅ NEW
 } from "./payment.controller";
@@ -52,4 +53,11 @@ paymentRoutes.get(
   requireAuth,
   requireRole("ADMIN", "MANAGER"),
   listPayments
+);
+
+paymentRoutes.delete(
+  "/payments/:paymentId",
+  requireAuth,
+  requireRole("ADMIN"),
+  deletePendingPayment
 );

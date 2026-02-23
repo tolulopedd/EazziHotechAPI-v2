@@ -1086,3 +1086,183 @@ export const pendingPayments = asyncHandler(async (req: Request, res: Response) 
 
   res.json({ items });
 });
+
+export const updateBooking = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+
+  const bookingId = normalizeOptionalString(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+  if (!bookingId) throw new AppError("booking id is required", 400, "VALIDATION_ERROR");
+
+  const current = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: {
+      id: true,
+      unitId: true,
+      status: true,
+      paymentStatus: true,
+      checkIn: true,
+      checkOut: true,
+      totalAmount: true,
+      currency: true,
+      guestId: true,
+    },
+  });
+  if (!current) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+  if (["CHECKED_IN", "CHECKED_OUT", "CANCELLED", "NO_SHOW"].includes(String(current.status).toUpperCase())) {
+    throw new AppError("Only PENDING or CONFIRMED bookings can be edited", 400, "INVALID_STATUS");
+  }
+
+  const {
+    unitId,
+    checkIn,
+    checkOut,
+    guestId,
+    totalAmount,
+    currency,
+  } = req.body ?? {};
+
+  const nextUnitId = normalizeOptionalString(unitId) ?? current.unitId;
+  const nextGuestId = normalizeOptionalString(guestId) ?? current.guestId ?? null;
+  const nextCheckIn = checkIn ? toDate(checkIn, "checkIn") : current.checkIn;
+  const nextCheckOut = checkOut ? toDate(checkOut, "checkOut") : current.checkOut;
+  if (nextCheckOut <= nextCheckIn) {
+    throw new AppError("checkOut must be after checkIn", 400, "VALIDATION_ERROR");
+  }
+
+  const nextTotalAmount = totalAmount !== undefined && totalAmount !== null && String(totalAmount).trim()
+    ? String(totalAmount).trim()
+    : (current.totalAmount ? String(current.totalAmount) : null);
+  if (nextTotalAmount !== null) {
+    const n = Number(nextTotalAmount);
+    if (!Number.isFinite(n) || n <= 0) throw new AppError("totalAmount must be a positive amount", 400, "VALIDATION_ERROR");
+  }
+  const nextCurrency = normalizeOptionalString(currency) ?? current.currency ?? "NGN";
+
+  const unit = await db.raw.unit.findFirst({
+    where: { id: nextUnitId, tenantId, ...scopedUnitWhere(propertyScope) },
+    select: { id: true },
+  });
+  if (!unit) throw new AppError("Unit not found", 404, "UNIT_NOT_FOUND");
+
+  if (nextGuestId) {
+    const guest = await db.raw.guest.findFirst({
+      where: { id: nextGuestId, tenantId },
+      select: { id: true },
+    });
+    if (!guest) throw new AppError("Guest not found", 404, "GUEST_NOT_FOUND");
+  }
+
+  const overlap = await db.raw.booking.findFirst({
+    where: {
+      tenantId,
+      id: { not: bookingId },
+      unitId: nextUnitId,
+      status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] },
+      AND: [{ checkIn: { lt: nextCheckOut } }, { checkOut: { gt: nextCheckIn } }],
+      ...scopedBookingWhere(propertyScope),
+    },
+    select: { id: true },
+  });
+  if (overlap) throw new AppError("Unit is not available for the selected dates", 409, "UNIT_NOT_AVAILABLE");
+
+  const updated = await db.raw.$transaction(async (tx) => {
+    let guestSnapshot: any = null;
+    if (nextGuestId) {
+      guestSnapshot = await tx.guest.findFirst({
+        where: { id: nextGuestId, tenantId },
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+          address: true,
+          nationality: true,
+          idType: true,
+          idNumber: true,
+          idIssuedBy: true,
+          vehiclePlate: true,
+        },
+      });
+    }
+
+    const booking = await tx.booking.update({
+      where: { id: bookingId },
+      data: {
+        unitId: nextUnitId,
+        checkIn: nextCheckIn,
+        checkOut: nextCheckOut,
+        guestId: nextGuestId,
+        totalAmount: nextTotalAmount,
+        currency: nextCurrency,
+        ...(guestSnapshot
+          ? {
+              guestName: guestSnapshot.fullName ?? null,
+              guestEmail: guestSnapshot.email ?? null,
+              guestPhone: guestSnapshot.phone ?? null,
+              guestAddress: guestSnapshot.address ?? null,
+              guestNationality: guestSnapshot.nationality ?? null,
+              idType: guestSnapshot.idType ?? null,
+              idNumber: guestSnapshot.idNumber ?? null,
+              idIssuedBy: guestSnapshot.idIssuedBy ?? null,
+              vehiclePlate: guestSnapshot.vehiclePlate ?? null,
+            }
+          : {}),
+      },
+      include: {
+        guest: { select: { id: true, fullName: true, email: true, phone: true } },
+        charges: {
+          where: { status: "OPEN", type: "ROOM" },
+          select: { id: true },
+        },
+      },
+    });
+
+    if (nextTotalAmount && booking.charges.length > 0) {
+      await tx.bookingCharge.updateMany({
+        where: { bookingId, tenantId, status: "OPEN", type: "ROOM" },
+        data: { amount: nextTotalAmount, currency: nextCurrency },
+      });
+    }
+
+    return booking;
+  });
+
+  res.json({ booking: withGuestPhotoUrl(updated as any) });
+});
+
+export const deleteBooking = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const bookingId = normalizeOptionalString(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+  if (!bookingId) throw new AppError("booking id is required", 400, "VALIDATION_ERROR");
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: { id: true, status: true, paymentStatus: true },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+
+  if (!["PENDING", "CONFIRMED"].includes(String(booking.status).toUpperCase())) {
+    throw new AppError("Only PENDING or CONFIRMED bookings can be deleted", 400, "INVALID_STATUS");
+  }
+
+  const confirmedCount = await db.raw.payment.count({
+    where: { tenantId, bookingId, status: "CONFIRMED" },
+  });
+  if (confirmedCount > 0) {
+    throw new AppError("Cannot delete booking with confirmed payments", 400, "CONFIRMED_PAYMENT_EXISTS");
+  }
+
+  await db.raw.$transaction(async (tx) => {
+    await tx.payment.deleteMany({ where: { tenantId, bookingId, status: { in: ["PENDING", "FAILED"] } } });
+    await tx.bookingCharge.deleteMany({ where: { tenantId, bookingId } });
+    await tx.checkEvent.deleteMany({ where: { tenantId, bookingId } });
+    await tx.bookingVisitor.deleteMany({ where: { tenantId, bookingId } });
+    await tx.booking.delete({ where: { id: bookingId } });
+  });
+
+  res.json({ ok: true });
+});

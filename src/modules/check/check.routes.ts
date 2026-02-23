@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   addBookingVisitor,
+  extendStay,
   addOverstayCharge,
   checkIn,
   checkOut,
@@ -25,6 +26,13 @@ checkRoutes.post(
   requireAuth,
   requireRole("ADMIN", "MANAGER", "STAFF"),
   checkOut
+);
+
+checkRoutes.post(
+  "/bookings/:bookingId/extend-stay",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  extendStay
 );
 
 checkRoutes.post(
