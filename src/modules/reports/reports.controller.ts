@@ -113,10 +113,14 @@ async function buildBookingsPaymentsReport(req: Request) {
       createdAt: true,
       status: true,
       paymentStatus: true,
+      checkIn: true,
+      checkOut: true,
       totalAmount: true,
       currency: true,
       checkedInAt: true,
       guestName: true,
+      guestPhone: true,
+      guestEmail: true,
       unit: {
         select: {
           id: true,
@@ -185,6 +189,18 @@ async function buildBookingsPaymentsReport(req: Request) {
     paidByBookingAllTime.set(p.bookingId, (paidByBookingAllTime.get(p.bookingId) || 0) + amt);
   }
 
+  const bookingMap = new Map(bookings.map((b) => [b.id, b]));
+  const totalBillByBooking = new Map<string, number>();
+  for (const b of bookings) {
+    totalBillByBooking.set(
+      b.id,
+      computeTotalBillFromBaseAndCharges(
+        Number(b.totalAmount?.toString?.() ?? b.totalAmount ?? 0),
+        b.charges ?? []
+      )
+    );
+  }
+
   // Daily buckets
   const dayMap = new Map<
     string,
@@ -251,6 +267,176 @@ async function buildBookingsPaymentsReport(req: Request) {
   }
 
   const daily = Array.from(dayMap.values()).sort((a, b) => a.day.localeCompare(b.day));
+
+  const bookingsReportRows = bookings
+    .map((b) => {
+      const totalBill = totalBillByBooking.get(b.id) ?? 0;
+      const paidAllTime = paidByBookingAllTime.get(b.id) || 0;
+      const bal = Math.max(0, totalBill - paidAllTime);
+      return {
+        bookingId: b.id,
+        date: isoDay(b.createdAt),
+        guestName: b.guestName ?? "",
+        room: b.unit?.name ?? "",
+        propertyName: b.unit?.property?.name ?? "",
+        bookingAmount: totalBill.toFixed(2),
+        paid: paidAllTime.toFixed(2),
+        outstanding: bal.toFixed(2),
+        currency: b.currency ?? "NGN",
+        status: String(b.status),
+        paymentStatus: String(b.paymentStatus),
+      };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const paymentRows = paymentsInRange.map((p) => {
+    const b = bookingMap.get(p.bookingId);
+    const totalBill = totalBillByBooking.get(p.bookingId) ?? 0;
+    return {
+      paymentId: p.id,
+      date: isoDay(p.paidAt ?? new Date()),
+      bookingId: p.bookingId,
+      guestName: b?.guestName ?? "",
+      room: b?.unit?.name ?? "",
+      propertyName: b?.unit?.property?.name ?? "",
+      bookingAmount: totalBill.toFixed(2),
+      paid: Number(p.amount?.toString?.() ?? p.amount ?? 0).toFixed(2),
+      currency: p.currency ?? b?.currency ?? "NGN",
+    };
+  });
+
+  const receivablesRows = bookingsReportRows
+    .filter((x) => Number(x.outstanding) > 0.009)
+    .map((x) => ({
+      date: x.date,
+      bookingId: x.bookingId,
+      guestName: x.guestName,
+      room: x.room,
+      propertyName: x.propertyName,
+      bookingAmount: x.bookingAmount,
+      outstandingAmount: x.outstanding,
+      currency: x.currency,
+    }));
+
+  const guestPaymentHistoryRows = paymentRows.map((x) => ({
+    date: x.date,
+    guestName: x.guestName,
+    room: x.room,
+    propertyName: x.propertyName,
+    bookingId: x.bookingId,
+    bookingAmount: x.bookingAmount,
+    paid: x.paid,
+    currency: x.currency,
+  }));
+
+  const guestDetailsMap = new Map<string, { name: string; phone: string; email: string }>();
+  for (const b of bookings) {
+    const name = String(b.guestName ?? "").trim();
+    if (!name) continue;
+    const key = `${name.toLowerCase()}|${String(b.guestPhone ?? "").toLowerCase()}|${String(b.guestEmail ?? "").toLowerCase()}`;
+    if (!guestDetailsMap.has(key)) {
+      guestDetailsMap.set(key, {
+        name,
+        phone: String(b.guestPhone ?? "").trim(),
+        email: String(b.guestEmail ?? "").trim(),
+      });
+    }
+  }
+  const guestDetails = Array.from(guestDetailsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+  const guestVisitHistoryRows = bookings
+    .map((b) => ({
+      bookingId: b.id,
+      name: b.guestName ?? "",
+      checkInDate: isoDay(b.checkIn),
+      checkOutDate: isoDay(b.checkOut),
+      room: b.unit?.name ?? "",
+      propertyName: b.unit?.property?.name ?? "",
+      status: String(b.status),
+    }))
+    .sort((a, b) => a.checkInDate.localeCompare(b.checkInDate));
+
+  const revenueSalesRows = paymentRows.map((x) => ({
+    date: x.date,
+    room: x.room,
+    propertyName: x.propertyName,
+    amount: x.paid,
+    currency: x.currency,
+    guestName: x.guestName,
+    bookingId: x.bookingId,
+  }));
+
+  const occupancyFrom = new Date(from);
+  const occupancyTo = new Date(to);
+  occupancyFrom.setHours(0, 0, 0, 0);
+  occupancyTo.setHours(0, 0, 0, 0);
+  const occupancyToExclusive = addDays(occupancyTo, 1);
+
+  const units = await db.raw.unit.findMany({
+    where: {
+      tenantId,
+      ...scopedUnitWhere(propertyScope),
+      ...(propertyId ? { propertyId } : {}),
+      ...(unitId ? { id: unitId } : {}),
+    },
+    select: {
+      id: true,
+      name: true,
+      property: { select: { name: true } },
+    },
+    orderBy: { name: "asc" },
+  });
+
+  const occupancyBookings = await db.raw.booking.findMany({
+    where: {
+      tenantId,
+      ...scopedBookingWhere(propertyScope),
+      status: { in: ["CONFIRMED", "CHECKED_IN", "CHECKED_OUT"] },
+      checkIn: { lt: occupancyToExclusive },
+      checkOut: { gt: occupancyFrom },
+      ...(propertyId ? { unit: { propertyId } } : {}),
+      ...(unitId ? { unitId } : {}),
+    },
+    select: { unitId: true, checkIn: true, checkOut: true },
+  });
+
+  const occupancyByUnit = new Map<string, Array<{ start: number; end: number }>>();
+  for (const b of occupancyBookings) {
+    const start = new Date(b.checkIn);
+    const end = new Date(b.checkOut);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
+    const item = { start: start.getTime(), end: end.getTime() };
+    const list = occupancyByUnit.get(b.unitId) ?? [];
+    list.push(item);
+    occupancyByUnit.set(b.unitId, list);
+  }
+
+  const occupancyRows: Array<{
+    date: string;
+    room: string;
+    propertyName: string;
+    status: "OCCUPIED" | "NOT_OCCUPIED";
+  }> = [];
+  for (let day = new Date(occupancyFrom); day <= occupancyTo; day = addDays(day, 1)) {
+    const dayStart = new Date(day);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = addDays(dayStart, 1);
+    const dayStartMs = dayStart.getTime();
+    const dayEndMs = dayEnd.getTime();
+    const dayIso = isoDay(dayStart);
+
+    for (const u of units) {
+      const intervals = occupancyByUnit.get(u.id) ?? [];
+      const isOccupied = intervals.some((r) => r.start < dayEndMs && r.end > dayStartMs);
+      occupancyRows.push({
+        date: dayIso,
+        room: u.name,
+        propertyName: u.property?.name ?? "",
+        status: isOccupied ? "OCCUPIED" : "NOT_OCCUPIED",
+      });
+    }
+  }
 
   const topOutstanding = bookings
     .map((b) => {
@@ -494,6 +680,14 @@ async function buildBookingsPaymentsReport(req: Request) {
       damagesAmountTotal: damagesAmountTotal.toFixed(2),
     },
     daily,
+    bookingsReportRows,
+    paymentRows,
+    receivablesRows,
+    guestPaymentHistoryRows,
+    guestDetails,
+    guestVisitHistoryRows,
+    revenueSalesRows,
+    occupancyRows,
     topOutstanding,
     earlyCheckouts,
     overstays,

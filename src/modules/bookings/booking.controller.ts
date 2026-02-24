@@ -905,8 +905,8 @@ export const recordBookingPayment = asyncHandler(async (req: Request, res: Respo
     throw new AppError('amount is required and must be a string like "45000.00"', 400, "VALIDATION_ERROR");
   }
   const parsedAmount = Number(amount);
-  if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-    throw new AppError("amount must be a positive numeric string", 400, "VALIDATION_ERROR");
+  if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
+    throw new AppError("amount must be a numeric string >= 0", 400, "VALIDATION_ERROR");
   }
 
   if (currency !== undefined && currency !== null && typeof currency !== "string") {
@@ -930,6 +930,16 @@ export const recordBookingPayment = asyncHandler(async (req: Request, res: Respo
     });
 
     if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+
+    const settings = await tx.tenantSettings.findUnique({
+      where: { tenantId },
+      select: { minDepositPercent: true },
+    });
+    const minDepositPercent = settings?.minDepositPercent ?? 100;
+    const allowZeroPayment = minDepositPercent === 0;
+    if (parsedAmount === 0 && !allowZeroPayment) {
+      throw new AppError("amount must be greater than 0 for this workspace policy", 400, "VALIDATION_ERROR");
+    }
 
     // ✅ totalBill from booking total + OPEN extras (or OPEN ROOM charges if itemized)
     const openCharges = await tx.bookingCharge.findMany({
@@ -976,7 +986,9 @@ export const recordBookingPayment = asyncHandler(async (req: Request, res: Respo
     else nextStatus = "PAID";
 
     const nextBookingStatus =
-      booking.status === "PENDING" && nextStatus !== "UNPAID" ? "CONFIRMED" : booking.status;
+      booking.status === "PENDING" && (nextStatus !== "UNPAID" || allowZeroPayment)
+        ? "CONFIRMED"
+        : booking.status;
 
     const updatedBooking = await tx.booking.update({
       where: { id: bookingId },
