@@ -92,3 +92,54 @@ This checks:
 - core table counts
 - tenant/user inventory sanity
 - warnings for common email/domain misconfiguration
+
+## 6) Render Cron setup (daily revenue report)
+Goal: run `notify:daily-revenue` automatically every morning Lagos time.
+
+### Prerequisites
+- Backend code includes:
+  - script: `scripts/send-daily-revenue-report.js`
+  - npm command: `npm run notify:daily-revenue`
+- Env vars configured on Render service:
+  - `EMAIL_PROVIDER=RESEND`
+  - `RESEND_API_KEY=...`
+  - `EMAIL_FROM=EazziHotech <no-reply@yourdomain.com>`
+  - Optional: `GOOGLE_REVIEW_URL`, `SUPPORT_PHONE`
+- Admin users exist with valid emails for each tenant.
+
+### Step-by-step (Render Dashboard)
+1. Open Render -> `New` -> `Cron Job`.
+2. Connect repo: `EazziHotechAPI-v2`.
+3. Branch: `main`.
+4. Runtime: `Node`.
+5. Build command:
+   - `npm ci`
+6. Start command:
+   - `npm run notify:daily-revenue`
+7. Region:
+   - same region as backend/db (for consistency).
+8. Environment variables:
+   - copy the same email/database env used by backend service.
+9. Schedule (UTC):
+   - Render cron uses UTC. Lagos is UTC+1 (no DST).
+   - For 8:00 AM Lagos, set: `0 7 * * *`
+   - For 9:00 AM Lagos, set: `0 8 * * *`
+10. Save and deploy cron job.
+
+### Manual test before enabling daily run
+Run once from backend terminal:
+```bash
+npm run notify:daily-revenue
+```
+Expected:
+- logs show report range and tenant send counts.
+- admin recipients get one daily report email each.
+
+### Troubleshooting
+- No email delivered:
+  - confirm `EMAIL_PROVIDER`, `RESEND_API_KEY`, verified sender domain.
+  - check cron logs for `Resend send failed`.
+- Script runs but no recipients:
+  - verify active `ADMIN` users exist and have valid emails.
+- Wrong timing:
+  - adjust UTC cron expression by +1 hour relative to Lagos local time target.

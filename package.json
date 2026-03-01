@@ -10,7 +10,8 @@
     "prisma:gen": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed:day0": "node scripts/seed-day0.js",
-    "check:readiness": "node scripts/readiness-check.js"
+    "check:readiness": "node scripts/readiness-check.js",
+    "notify:daily-revenue": "node scripts/send-daily-revenue-report.js"
   },
   "keywords": [],
   "author": "",

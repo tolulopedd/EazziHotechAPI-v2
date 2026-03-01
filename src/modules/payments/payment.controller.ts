@@ -3,15 +3,26 @@ import { asyncHandler } from "../../common/utils/asyncHandler";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { AppError } from "../../common/errors/AppError";
 import { resolvePropertyScope, scopedBookingWhere, scopedPaymentWhere } from "../../common/authz/property-scope";
+import { logger } from "../../common/logger/logger";
+import { sendGuestPaymentAcknowledgementEmail } from "../../common/notifications/email";
 
 function computeTotalBillFromBaseAndCharges(
   baseAmount: number,
   charges: Array<{ amount: any; type?: string | null }> | null | undefined
 ) {
   const list = charges ?? [];
-  const chargesTotal = list.reduce((sum, c) => sum + Number(c.amount?.toString?.() ?? c.amount ?? 0), 0);
-  const hasRoomCharge = list.some((c) => String(c.type || "").toUpperCase() === "ROOM");
-  return hasRoomCharge ? chargesTotal : Math.max(0, baseAmount) + chargesTotal;
+  const base = Math.max(0, Number(baseAmount || 0));
+
+  const roomCharges = list.filter((c) => String(c.type || "").toUpperCase() === "ROOM");
+  const otherCharges = list.filter((c) => String(c.type || "").toUpperCase() !== "ROOM");
+
+  const roomTotal = roomCharges.reduce((sum, c) => sum + Number(c.amount?.toString?.() ?? c.amount ?? 0), 0);
+  const otherTotal = otherCharges.reduce((sum, c) => sum + Number(c.amount?.toString?.() ?? c.amount ?? 0), 0);
+
+  // If ROOM charge exists, use it unless legacy data undercut booking total.
+  const roomComponent = roomCharges.length > 0 ? Math.max(roomTotal, base) : base;
+
+  return Math.max(0, roomComponent + otherTotal);
 }
 
 /**
@@ -190,7 +201,11 @@ export const confirmPayment = asyncHandler(async (req: Request, res: Response) =
     include: {
       booking: {
         include: {
-          unit: true,
+          unit: {
+            include: {
+              property: { select: { address: true } },
+            },
+          },
           payments: { where: { status: "CONFIRMED" } },
           charges: { where: { status: "OPEN" }, select: { amount: true, type: true } }, // ✅ NEW
         },
@@ -203,6 +218,7 @@ export const confirmPayment = asyncHandler(async (req: Request, res: Response) =
 
   const booking = payment.booking;
   if (!booking) throw new AppError("Booking not found for payment", 404, "BOOKING_NOT_FOUND");
+  const isFirstConfirmedPayment = (booking.payments?.length ?? 0) === 0;
 
   // Confirm payment
   const confirmedPayment = await db.raw.payment.update({
@@ -255,6 +271,31 @@ export const confirmPayment = asyncHandler(async (req: Request, res: Response) =
       paymentStatus,
     },
   });
+
+  if (isFirstConfirmedPayment && booking.guestEmail && Number(confirmedPayment.amount ?? 0) > 0) {
+    const tenantMeta = await db.raw.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true, slug: true, phone: true },
+    });
+    sendGuestPaymentAcknowledgementEmail({
+      to: String(booking.guestEmail),
+      guestName: booking.guestName ?? null,
+      bookingId: booking.id,
+      tenantName: tenantMeta?.name ?? null,
+      tenantSlug: tenantMeta?.slug ?? null,
+      tenantPhone: tenantMeta?.phone ?? null,
+      propertyAddress: booking?.unit?.property?.address ?? null,
+      amountPaid: confirmedPayment.amount,
+      paymentDate: confirmedPayment.paidAt ?? confirmedPayment.confirmedAt ?? new Date(),
+      paymentMethod: confirmedPayment.method ?? "MANUAL",
+      remainingBalance: Math.max(0, totalBill - paidTotal).toFixed(2),
+    }).catch((err) => {
+      logger.warn(
+        { event: "notify.payment_ack_email_failed", tenantId, bookingId: booking.id, paymentId, error: String(err) },
+        "Failed to send payment acknowledgement email"
+      );
+    });
+  }
 
   res.json({
     payment: confirmedPayment,

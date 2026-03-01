@@ -41,9 +41,18 @@ function computeTotalBillFromBaseAndCharges(
   charges: Array<{ amount: any; type?: string | null }> | null | undefined
 ) {
   const list = charges ?? [];
-  const chargesTotal = list.reduce((sum, c) => sum + Number(c.amount?.toString?.() ?? c.amount ?? 0), 0);
-  const hasRoomCharge = list.some((c) => String(c.type || "").toUpperCase() === "ROOM");
-  return hasRoomCharge ? chargesTotal : Math.max(0, baseAmount) + chargesTotal;
+  const base = Math.max(0, Number(baseAmount || 0));
+
+  const roomCharges = list.filter((c) => String(c.type || "").toUpperCase() === "ROOM");
+  const otherCharges = list.filter((c) => String(c.type || "").toUpperCase() !== "ROOM");
+
+  const roomTotal = roomCharges.reduce((sum, c) => sum + Number(c.amount?.toString?.() ?? c.amount ?? 0), 0);
+  const otherTotal = otherCharges.reduce((sum, c) => sum + Number(c.amount?.toString?.() ?? c.amount ?? 0), 0);
+
+  // If ROOM charge exists, use it unless legacy data undercut booking total.
+  const roomComponent = roomCharges.length > 0 ? Math.max(roomTotal, base) : base;
+
+  return Math.max(0, roomComponent + otherTotal);
 }
 
 /**
@@ -179,15 +188,16 @@ export const checkIn = asyncHandler(async (req: Request, res: Response) => {
       guestName: true,
       guestEmail: true,
       checkIn: true,
+      checkedInAt: true,
       checkOut: true,
       totalAmount: true,
       currency: true,
-      unit: { select: { name: true, property: { select: { name: true, address: true } } } },
+      unit: { select: { name: true, capacity: true, property: { select: { name: true, address: true } } } },
     },
   });
   const tenantMeta = await db.raw.tenant.findUnique({
     where: { id: tenantId },
-    select: { name: true, slug: true, email: true },
+    select: { name: true, slug: true, email: true, phone: true },
   });
   if (checkInNotifyBooking?.guestEmail) {
     sendGuestCheckInEmail({
@@ -197,10 +207,13 @@ export const checkIn = asyncHandler(async (req: Request, res: Response) => {
       tenantName: tenantMeta?.name ?? null,
       tenantSlug: tenantMeta?.slug ?? null,
       supportEmail: tenantMeta?.email ?? null,
+      tenantPhone: tenantMeta?.phone ?? null,
       propertyName: checkInNotifyBooking?.unit?.property?.name ?? null,
       propertyAddress: checkInNotifyBooking?.unit?.property?.address ?? null,
       unitName: checkInNotifyBooking?.unit?.name ?? null,
+      unitCapacity: checkInNotifyBooking?.unit?.capacity ?? null,
       checkIn: checkInNotifyBooking.checkIn,
+      checkedInAt: checkInNotifyBooking.checkedInAt,
       checkOut: checkInNotifyBooking.checkOut,
       totalAmount: checkInNotifyBooking.totalAmount?.toString?.() ?? checkInNotifyBooking.totalAmount ?? null,
       currency: checkInNotifyBooking.currency ?? "NGN",
@@ -227,9 +240,11 @@ export const checkIn = asyncHandler(async (req: Request, res: Response) => {
       tenantName: tenantMeta?.name ?? null,
       tenantSlug: tenantMeta?.slug ?? null,
       supportEmail: tenantMeta?.email ?? null,
+      tenantPhone: tenantMeta?.phone ?? null,
       propertyName: checkInNotifyBooking?.unit?.property?.name ?? null,
       propertyAddress: checkInNotifyBooking?.unit?.property?.address ?? null,
       unitName: checkInNotifyBooking?.unit?.name ?? null,
+      unitCapacity: checkInNotifyBooking?.unit?.capacity ?? null,
       checkIn: checkInNotifyBooking?.checkIn,
       checkOut: checkInNotifyBooking?.checkOut,
       totalAmount: checkInNotifyBooking?.totalAmount?.toString?.() ?? checkInNotifyBooking?.totalAmount ?? null,
@@ -438,7 +453,7 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
   );
   const checkoutTenantMeta = await db.raw.tenant.findUnique({
     where: { id: tenantId },
-    select: { name: true, slug: true, email: true },
+    select: { name: true, slug: true, email: true, phone: true },
   });
 
   if (booking.guestEmail) {
@@ -449,9 +464,11 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
       tenantName: checkoutTenantMeta?.name ?? null,
       tenantSlug: checkoutTenantMeta?.slug ?? null,
       supportEmail: checkoutTenantMeta?.email ?? null,
+      tenantPhone: checkoutTenantMeta?.phone ?? null,
       propertyName: booking?.unit?.property?.name ?? null,
       propertyAddress: booking?.unit?.property?.address ?? null,
       unitName: booking?.unit?.name ?? null,
+      checkedOutAt: result.booking.checkedOutAt ?? new Date(),
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
       totalAmount: booking.totalAmount?.toString?.() ?? booking.totalAmount ?? null,
@@ -479,6 +496,7 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
       tenantName: checkoutTenantMeta?.name ?? null,
       tenantSlug: checkoutTenantMeta?.slug ?? null,
       supportEmail: checkoutTenantMeta?.email ?? null,
+      tenantPhone: checkoutTenantMeta?.phone ?? null,
       propertyName: booking?.unit?.property?.name ?? null,
       propertyAddress: booking?.unit?.property?.address ?? null,
       unitName: booking?.unit?.name ?? null,

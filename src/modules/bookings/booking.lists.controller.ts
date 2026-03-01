@@ -11,22 +11,39 @@ export const arrivalsToday = asyncHandler(async (req: Request, res: Response) =>
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const propertyScope = await resolvePropertyScope(req);
+  const now = new Date();
 
-  const start = new Date();
+  const start = new Date(now);
   start.setHours(0, 0, 0, 0);
 
-  const end = new Date();
+  const end = new Date(now);
   end.setHours(23, 59, 59, 999);
+
+  // Allow overnight same-stay-window arrivals after midnight:
+  // include CONFIRMED bookings from yesterday that are still active and not yet checked in.
+  const backdateStart = new Date(start);
+  backdateStart.setDate(backdateStart.getDate() - 1);
 
   const bookings = await db.raw.booking.findMany({
     where: {
       tenantId,
       ...scopedBookingWhere(propertyScope),
       status: "CONFIRMED",
-      checkIn: {
-        gte: start,
-        lte: end,
-      },
+      checkedInAt: null,
+      OR: [
+        {
+          checkIn: {
+            gte: start,
+            lte: end,
+          },
+        },
+        {
+          AND: [
+            { checkIn: { gte: backdateStart, lt: start } },
+            { checkOut: { gt: now } },
+          ],
+        },
+      ],
     },
     include: {
       guest: {

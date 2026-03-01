@@ -439,7 +439,16 @@ export async function listPlatformTenants(req: Request, res: Response, next: Nex
         orderBy: { createdAt: "desc" },
         skip,
         take: pageSize,
-        include: { settings: true },
+        include: {
+          settings: true,
+          _count: {
+            select: {
+              properties: true,
+              units: true,
+              users: true,
+            },
+          },
+        },
       }),
     ]);
 
@@ -451,6 +460,9 @@ export async function listPlatformTenants(req: Request, res: Response, next: Nex
       tenants: tenants.map((t) => ({
         ...safeTenant(t),
         settings: t.settings ? safeSettings(t.settings) : null,
+        propertiesCount: t._count?.properties ?? 0,
+        unitsCount: t._count?.units ?? 0,
+        usersCount: t._count?.users ?? 0,
       })),
     });
   } catch (err) {
