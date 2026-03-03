@@ -402,7 +402,7 @@ export const listBookings = asyncHandler(async (req: Request, res: Response) => 
       guest: { select: { id: true, fullName: true, email: true, phone: true } }, // ✅ IMPORTANT
       charges: {
         where: { status: "OPEN" },
-        select: { amount: true, type: true },
+        select: { id: true, amount: true, type: true, title: true, currency: true, createdAt: true },
       },
       payments: {
         where: { status: "CONFIRMED" },
@@ -605,7 +605,7 @@ export const inHouse = asyncHandler(async (req: Request, res: Response) => {
       },
       charges: {
         where: { status: "OPEN" },
-        select: { amount: true, type: true },
+        select: { id: true, amount: true, type: true, title: true, currency: true, createdAt: true },
       },
       payments: {
         where: { status: "CONFIRMED" },

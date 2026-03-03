@@ -4,6 +4,9 @@ import { AppError } from "../../common/errors/AppError";
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 import { assertPropertyInScope, resolvePropertyScope, scopedBookingWhere, scopedUnitWhere } from "../../common/authz/property-scope";
 
+const REPORT_CACHE_TTL_MS = 20_000;
+const reportCache = new Map<string, { expiresAt: number; data: any }>();
+
 function computeTotalBillFromBaseAndCharges(
   baseAmount: number,
   charges: Array<{ amount: any; type?: string | null }> | null | undefined
@@ -79,7 +82,24 @@ function isoDay(d: Date) {
 
 /* ================= BUILDER (SINGLE SOURCE OF TRUTH) ================= */
 
+function buildReportCacheKey(req: Request) {
+  const tenantId = req.tenantId ?? "";
+  const userId = (req as any).user?.userId ?? "";
+  const role = (req as any).user?.role ?? "";
+  const from = String(req.query.from || "");
+  const to = String(req.query.to || "");
+  const includeCancelled = String(req.query.includeCancelled || "");
+  const propertyId = String(req.query.propertyId || "");
+  const unitId = String(req.query.unitId || "");
+  return [tenantId, userId, role, from, to, includeCancelled, propertyId, unitId].join("|");
+}
+
 async function buildBookingsPaymentsReport(req: Request) {
+  const cacheKey = buildReportCacheKey(req);
+  const nowMs = Date.now();
+  const cached = reportCache.get(cacheKey);
+  if (cached && cached.expiresAt > nowMs) return cached.data;
+
   const tenantId = req.tenantId!;
   const db = prismaForTenant(tenantId);
   const propertyScope = await resolvePropertyScope(req);
@@ -146,10 +166,10 @@ async function buildBookingsPaymentsReport(req: Request) {
   });
 
   const bookingIds = bookings.map((b) => b.id);
-  const paymentsInRange =
+  const [paymentsInRange, paymentsAllTime, preBookingsPaid] = await Promise.all([
     bookingIds.length === 0
-      ? []
-      : await db.raw.payment.findMany({
+      ? Promise.resolve([])
+      : db.raw.payment.findMany({
           where: {
             tenantId,
             status: "CONFIRMED",
@@ -164,11 +184,10 @@ async function buildBookingsPaymentsReport(req: Request) {
             paidAt: true,
           },
           orderBy: { paidAt: "asc" },
-        });
-  const paymentsAllTime =
+        }),
     bookingIds.length === 0
-      ? []
-      : await db.raw.payment.findMany({
+      ? Promise.resolve([])
+      : db.raw.payment.findMany({
           where: {
             tenantId,
             status: "CONFIRMED",
@@ -182,7 +201,25 @@ async function buildBookingsPaymentsReport(req: Request) {
             paidAt: true,
           },
           orderBy: { paidAt: "asc" },
-        });
+        }),
+    db.raw.preBooking.findMany({
+      where: {
+        tenantId,
+        convertedBookingId: null,
+        createdAt: { gte: from, lt: toExclusive },
+        amountPaid: { gt: 0 },
+        status: { in: ["PENDING", "PAID"] },
+      },
+      select: {
+        id: true,
+        guestName: true,
+        amountPaid: true,
+        currency: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "asc" },
+    }),
+  ]);
 
   // Payments sum by booking (in selected range)
   const paidByBookingInRange = new Map<string, number>();
@@ -268,6 +305,16 @@ async function buildBookingsPaymentsReport(req: Request) {
     bucket.outstanding += bal;
   }
 
+  const preBookingPaidTotal = preBookingsPaid.reduce(
+    (sum, p) => sum + Number(p.amountPaid?.toString?.() ?? p.amountPaid ?? 0),
+    0
+  );
+  totalPaid += preBookingPaidTotal;
+  for (const p of preBookingsPaid) {
+    const day = isoDay(p.createdAt);
+    ensureDay(day).totalPaid += Number(p.amountPaid?.toString?.() ?? p.amountPaid ?? 0);
+  }
+
   // check-ins per day (by checkedInAt)
   for (const b of bookings) {
     if (!b.checkedInAt) continue;
@@ -298,7 +345,7 @@ async function buildBookingsPaymentsReport(req: Request) {
     })
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  const paymentRows = paymentsInRange.map((p) => {
+  const bookingPaymentRows = paymentsInRange.map((p) => {
     const b = bookingMap.get(p.bookingId);
     const totalBill = totalBillByBooking.get(p.bookingId) ?? 0;
     return {
@@ -313,6 +360,21 @@ async function buildBookingsPaymentsReport(req: Request) {
       currency: p.currency ?? b?.currency ?? "NGN",
     };
   });
+  const preBookingPaymentRows = preBookingsPaid.map((p) => {
+    const paid = Number(p.amountPaid?.toString?.() ?? p.amountPaid ?? 0);
+    return {
+      paymentId: `PRE-${p.id.slice(0, 8)}`,
+      date: isoDay(p.createdAt),
+      bookingId: `PRE-${p.id}`,
+      guestName: p.guestName ?? "",
+      room: "Pre-booking (pending room assignment)",
+      propertyName: "",
+      bookingAmount: paid.toFixed(2),
+      paid: paid.toFixed(2),
+      currency: p.currency ?? "NGN",
+    };
+  });
+  const paymentRows = [...bookingPaymentRows, ...preBookingPaymentRows];
 
   const receivablesRows = bookingsReportRows
     .filter((x) => Number(x.outstanding) > 0.009)
@@ -381,7 +443,7 @@ async function buildBookingsPaymentsReport(req: Request) {
   occupancyTo.setHours(0, 0, 0, 0);
   const occupancyToExclusive = addDays(occupancyTo, 1);
 
-  const units = await db.raw.unit.findMany({
+  const unitsPromise = db.raw.unit.findMany({
     where: {
       tenantId,
       ...scopedUnitWhere(propertyScope),
@@ -396,7 +458,7 @@ async function buildBookingsPaymentsReport(req: Request) {
     orderBy: { name: "asc" },
   });
 
-  const occupancyBookings = await db.raw.booking.findMany({
+  const occupancyBookingsPromise = db.raw.booking.findMany({
     where: {
       tenantId,
       ...scopedBookingWhere(propertyScope),
@@ -473,7 +535,7 @@ async function buildBookingsPaymentsReport(req: Request) {
     .filter((x) => Number(x.outstanding) > 0)
     .sort((a, b) => Number(b.outstanding) - Number(a.outstanding));
 
-  const earlyCheckoutEvents = await db.raw.checkEvent.findMany({
+  const earlyCheckoutEventsPromise = db.raw.checkEvent.findMany({
     where: {
       tenantId,
       type: "CHECK_OUT",
@@ -511,31 +573,7 @@ async function buildBookingsPaymentsReport(req: Request) {
     take: 100,
   });
 
-  const refundAmountTotal = earlyCheckoutEvents.reduce(
-    (sum, x) => sum + Number(x.refundAmount?.toString?.() ?? x.refundAmount ?? 0),
-    0
-  );
-  const refundEligibleTotal = earlyCheckoutEvents.reduce(
-    (sum, x) => sum + Number(x.refundEligibleAmount?.toString?.() ?? x.refundEligibleAmount ?? 0),
-    0
-  );
-  const refundApprovedCount = earlyCheckoutEvents.filter((x) => Boolean(x.refundApproved)).length;
-  const earlyCheckouts = earlyCheckoutEvents.map((x) => ({
-    checkEventId: x.id,
-    bookingId: x.booking?.id ?? "",
-    guestName: x.booking?.guestName ?? "",
-    propertyName: x.booking?.unit?.property?.name ?? "",
-    unitName: x.booking?.unit?.name ?? "",
-    checkedOutAt: isoDay(x.capturedAt),
-    refundPolicy: x.refundPolicy ?? null,
-    refundEligibleAmount: Number(x.refundEligibleAmount?.toString?.() ?? x.refundEligibleAmount ?? 0).toFixed(2),
-    refundApproved: Boolean(x.refundApproved),
-    refundAmount: Number(x.refundAmount?.toString?.() ?? x.refundAmount ?? 0).toFixed(2),
-    refundStatus: x.refundStatus ?? null,
-    refundReason: x.refundReason ?? null,
-  }));
-
-  const overstayedBookings = await db.raw.booking.findMany({
+  const overstayedBookingsPromise = db.raw.booking.findMany({
     where: {
       tenantId,
       ...scopedBookingWhere(propertyScope),
@@ -572,30 +610,7 @@ async function buildBookingsPaymentsReport(req: Request) {
     take: 200,
   });
 
-  const overstays = overstayedBookings.map((b) => {
-    const now = Date.now();
-    const checkoutMs = new Date(b.checkOut).getTime();
-    const checkinMs = new Date(b.checkIn).getTime();
-    const daysOverstayed = Math.max(1, Math.floor((now - checkoutMs) / (1000 * 60 * 60 * 24)));
-    const bookedNights = Math.max(1, Math.ceil((checkoutMs - checkinMs) / (1000 * 60 * 60 * 24)));
-    const nightlyRate = bookedNights > 0 ? Number(b.totalAmount ?? 0) / bookedNights : 0;
-    const estimatedOverstay = Math.max(0, daysOverstayed * nightlyRate);
-    const postedOverstay = (b.charges || []).reduce((sum, c) => sum + Number(c.amount?.toString?.() ?? c.amount ?? 0), 0);
-    return {
-      bookingId: b.id,
-      guestName: b.guestName ?? "",
-      propertyName: b.unit?.property?.name ?? "",
-      unitName: b.unit?.name ?? "",
-      scheduledCheckout: isoDay(b.checkOut),
-      daysOverstayed,
-      estimatedOverstay: estimatedOverstay.toFixed(2),
-      postedOverstay: postedOverstay.toFixed(2),
-      currency: b.currency ?? "NGN",
-    };
-  });
-  const overstayAmountTotal = overstays.reduce((sum, x) => sum + Number(x.postedOverstay), 0);
-
-  const totalUnits = await db.raw.unit.count({
+  const totalUnitsPromise = db.raw.unit.count({
     where: {
       tenantId,
       ...scopedUnitWhere(propertyScope),
@@ -604,7 +619,7 @@ async function buildBookingsPaymentsReport(req: Request) {
     },
   });
 
-  const occupiedUnits = await db.raw.booking
+  const occupiedUnitsRowsPromise = db.raw.booking
     .findMany({
       where: {
         tenantId,
@@ -615,12 +630,9 @@ async function buildBookingsPaymentsReport(req: Request) {
       },
       select: { unitId: true },
       distinct: ["unitId"],
-    })
-    .then((rows) => rows.length);
-
-  const occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0;
-
-  const damageCharges = await db.raw.bookingCharge.findMany({
+    });
+    
+  const damageChargesPromise = db.raw.bookingCharge.findMany({
     where: {
       tenantId,
       type: "DAMAGE",
@@ -651,6 +663,73 @@ async function buildBookingsPaymentsReport(req: Request) {
     take: 200,
   });
 
+  const [
+    units,
+    occupancyBookings,
+    earlyCheckoutEvents,
+    overstayedBookings,
+    totalUnits,
+    occupiedUnitsRows,
+    damageCharges,
+  ] = await Promise.all([
+    unitsPromise,
+    occupancyBookingsPromise,
+    earlyCheckoutEventsPromise,
+    overstayedBookingsPromise,
+    totalUnitsPromise,
+    occupiedUnitsRowsPromise,
+    damageChargesPromise,
+  ]);
+  const occupiedUnits = occupiedUnitsRows.length;
+  const occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0;
+
+  const refundAmountTotal = earlyCheckoutEvents.reduce(
+    (sum, x) => sum + Number(x.refundAmount?.toString?.() ?? x.refundAmount ?? 0),
+    0
+  );
+  const refundEligibleTotal = earlyCheckoutEvents.reduce(
+    (sum, x) => sum + Number(x.refundEligibleAmount?.toString?.() ?? x.refundEligibleAmount ?? 0),
+    0
+  );
+  const refundApprovedCount = earlyCheckoutEvents.filter((x) => Boolean(x.refundApproved)).length;
+  const earlyCheckouts = earlyCheckoutEvents.map((x) => ({
+    checkEventId: x.id,
+    bookingId: x.booking?.id ?? "",
+    guestName: x.booking?.guestName ?? "",
+    propertyName: x.booking?.unit?.property?.name ?? "",
+    unitName: x.booking?.unit?.name ?? "",
+    checkedOutAt: isoDay(x.capturedAt),
+    refundPolicy: x.refundPolicy ?? null,
+    refundEligibleAmount: Number(x.refundEligibleAmount?.toString?.() ?? x.refundEligibleAmount ?? 0).toFixed(2),
+    refundApproved: Boolean(x.refundApproved),
+    refundAmount: Number(x.refundAmount?.toString?.() ?? x.refundAmount ?? 0).toFixed(2),
+    refundStatus: x.refundStatus ?? null,
+    refundReason: x.refundReason ?? null,
+  }));
+
+  const overstays = overstayedBookings.map((b) => {
+    const now = Date.now();
+    const checkoutMs = new Date(b.checkOut).getTime();
+    const checkinMs = new Date(b.checkIn).getTime();
+    const daysOverstayed = Math.max(1, Math.floor((now - checkoutMs) / (1000 * 60 * 60 * 24)));
+    const bookedNights = Math.max(1, Math.ceil((checkoutMs - checkinMs) / (1000 * 60 * 60 * 24)));
+    const nightlyRate = bookedNights > 0 ? Number(b.totalAmount ?? 0) / bookedNights : 0;
+    const estimatedOverstay = Math.max(0, daysOverstayed * nightlyRate);
+    const postedOverstay = (b.charges || []).reduce((sum, c) => sum + Number(c.amount?.toString?.() ?? c.amount ?? 0), 0);
+    return {
+      bookingId: b.id,
+      guestName: b.guestName ?? "",
+      propertyName: b.unit?.property?.name ?? "",
+      unitName: b.unit?.name ?? "",
+      scheduledCheckout: isoDay(b.checkOut),
+      daysOverstayed,
+      estimatedOverstay: estimatedOverstay.toFixed(2),
+      postedOverstay: postedOverstay.toFixed(2),
+      currency: b.currency ?? "NGN",
+    };
+  });
+  const overstayAmountTotal = overstays.reduce((sum, x) => sum + Number(x.postedOverstay), 0);
+
   const damagesAmountTotal = damageCharges.reduce(
     (sum, x) => sum + Number(x.amount?.toString?.() ?? x.amount ?? 0),
     0
@@ -667,7 +746,7 @@ async function buildBookingsPaymentsReport(req: Request) {
     unitName: x.booking?.unit?.name ?? "",
   }));
 
-  return {
+  const result = {
     range: { from: isoDay(from), to: isoDay(to) },
     summary: {
       bookingsCount,
@@ -702,6 +781,8 @@ async function buildBookingsPaymentsReport(req: Request) {
     overstays,
     damages,
   };
+  reportCache.set(cacheKey, { expiresAt: nowMs + REPORT_CACHE_TTL_MS, data: result });
+  return result;
 }
 
 /* ================= HANDLERS ================= */

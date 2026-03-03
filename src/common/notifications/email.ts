@@ -50,6 +50,22 @@ type SendAdminDailyRevenueReportEmailInput = {
   reportDateLabel?: string;
 };
 
+type SendGuestBillEmailInput = {
+  to: string;
+  guestName?: string | null;
+  bookingId: string;
+  tenantName?: string | null;
+  propertyName?: string | null;
+  unitName?: string | null;
+  checkIn?: Date | string | null;
+  checkOut?: Date | string | null;
+  totalBill?: string | number | null;
+  paidTotal?: string | number | null;
+  balanceDue?: string | number | null;
+  currency?: string | null;
+  pdfBase64?: string | null;
+};
+
 function normalizeEmailFrom(value: string | undefined, appName: string) {
   const raw = (value || "").trim().replace(/^['"]|['"]$/g, "");
   if (!raw) return `${appName} <onboarding@resend.dev>`;
@@ -150,6 +166,12 @@ async function sendEmailMessage(input: {
   subject: string;
   html: string;
   consoleFallback: string;
+  attachments?: Array<{
+    filename: string;
+    content: string;
+    type?: string;
+    disposition?: "attachment" | "inline";
+  }>;
 }) {
   const provider = (process.env.EMAIL_PROVIDER || "CONSOLE").trim().toUpperCase();
   const appName = process.env.APP_NAME || "EazziHotech";
@@ -174,6 +196,7 @@ async function sendEmailMessage(input: {
         to: [input.to],
         subject: input.subject,
         html: input.html,
+        attachments: input.attachments,
       }),
     });
 
@@ -453,5 +476,43 @@ export async function sendAdminCheckOutAlertEmail(input: SendGuestLifecycleEmail
     subject,
     html,
     consoleFallback: `[email] Admin check-out alert for ${input.to} (booking ${input.bookingId})`,
+  });
+}
+
+export async function sendGuestBillEmail(input: SendGuestBillEmailInput) {
+  const appName = process.env.APP_NAME || "EazziHotech";
+  const tenantName = input.tenantName?.trim() || appName;
+  const subject = `Billing Statement – Booking #${bookingShortId(input.bookingId)}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #111827; line-height: 1.6;">
+      <p>Dear ${escapeHtml(input.guestName?.trim() || "Guest Name")},</p>
+      <p>Please find your billing statement attached for your stay.</p>
+      <p><b>Booking Reference:</b> #${escapeHtml(bookingShortId(input.bookingId))}<br/>
+      <b>Property / Unit:</b> ${escapeHtml(input.propertyName?.trim() || "—")} / ${escapeHtml(input.unitName?.trim() || "—")}<br/>
+      <b>Stay:</b> ${escapeHtml(formatDateDdMonYyyy(input.checkIn))} to ${escapeHtml(formatDateDdMonYyyy(input.checkOut))}<br/>
+      <b>Total Bill:</b> ₦${escapeHtml(formatNairaAmount(input.totalBill))}<br/>
+      <b>Total Paid:</b> ₦${escapeHtml(formatNairaAmount(input.paidTotal))}<br/>
+      <b>Balance Due:</b> ₦${escapeHtml(formatNairaAmount(input.balanceDue))}</p>
+      <p>Thank you for choosing ${escapeHtml(tenantName)}.</p>
+      <p>Warm regards,<br/>${escapeHtml(tenantName)}</p>
+    </div>
+  `;
+
+  await sendEmailMessage({
+    to: input.to,
+    subject,
+    html,
+    attachments:
+      input.pdfBase64 && String(input.pdfBase64).trim()
+        ? [
+            {
+              filename: `bill_${bookingShortId(input.bookingId)}.pdf`,
+              content: input.pdfBase64,
+              type: "application/pdf",
+              disposition: "attachment",
+            },
+          ]
+        : undefined,
+    consoleFallback: `[email] Guest bill email for ${input.to} (booking ${input.bookingId})`,
   });
 }

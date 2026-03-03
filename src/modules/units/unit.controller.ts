@@ -6,6 +6,55 @@ import { assertPropertyInScope, resolvePropertyScope, scopedUnitWhere } from "..
 // prisma folder is at project root (outside src)
 import { prismaForTenant } from "../../../prisma/tenantPrisma";
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const LAGOS_TZ = "Africa/Lagos";
+const lagosDateFmt = new Intl.DateTimeFormat("en-CA", {
+  timeZone: LAGOS_TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function lagosDateKey(input: Date | string) {
+  const d = input instanceof Date ? input : new Date(input);
+  return lagosDateFmt.format(d);
+}
+
+function lagosDayNumber(input: Date | string) {
+  const [y, m, d] = lagosDateKey(input).split("-").map(Number);
+  return Math.floor(Date.UTC(y, (m || 1) - 1, d || 1) / MS_PER_DAY);
+}
+
+async function clearExpiredUnitPromos(db: ReturnType<typeof prismaForTenant>, tenantId: string, propertyId?: string) {
+  const today = lagosDayNumber(new Date());
+  const promoUnits = await db.raw.unit.findMany({
+    where: {
+      tenantId,
+      ...(propertyId ? { propertyId } : {}),
+      discountType: { not: null },
+      discountEnd: { not: null },
+    },
+    select: { id: true, discountEnd: true },
+  });
+
+  const expiredIds = promoUnits
+    .filter((u) => u.discountEnd && lagosDayNumber(u.discountEnd) < today)
+    .map((u) => u.id);
+
+  if (expiredIds.length === 0) return;
+
+  await db.raw.unit.updateMany({
+    where: { id: { in: expiredIds } },
+    data: {
+      discountType: null,
+      discountValue: null,
+      discountStart: null,
+      discountEnd: null,
+      discountLabel: null,
+    },
+  });
+}
+
 function toOptionalDate(value: unknown, field: string) {
   if (value === undefined || value === null || value === "") return null;
   const d = new Date(String(value));
@@ -77,6 +126,8 @@ export const listUnitsByProperty = asyncHandler(async (req: Request, res: Respon
   const property = await db.property.findById(propertyId);
   if (!property) throw new AppError("Property not found", 404, "PROPERTY_NOT_FOUND");
 
+  await clearExpiredUnitPromos(db, tenantId, propertyId);
+
   const units = await db.unit.findMany({
     where: { propertyId },
     orderBy: { createdAt: "desc" },
@@ -92,6 +143,8 @@ export const listUnits = asyncHandler(async (req: Request, res: Response) => {
 
   // Optional filters
   const propertyId = req.query.propertyId ? String(req.query.propertyId) : undefined;
+
+  await clearExpiredUnitPromos(db, tenantId, propertyId);
 
   const units = await db.raw.unit.findMany({
     where: {

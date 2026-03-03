@@ -119,6 +119,13 @@ enum LeadStatus {
   LOST
 }
 
+enum PreBookingStatus {
+  PENDING
+  PAID
+  CANCELLED
+  CONVERTED
+}
+
 enum NewsType {
   ARTICLE
   VIDEO
@@ -163,6 +170,7 @@ model Tenant {
   /** ✅ NEW relations */
   guests      Guest[]
   charges     BookingCharge[]
+  preBookings PreBooking[]
 
   @@index([slug])
 }
@@ -291,6 +299,7 @@ model Booking {
   payments    Payment[]
   checkEvents CheckEvent[]
   visitors    BookingVisitor[]
+  sourcePreBooking PreBooking? @relation("PreBookingConvertedBooking")
 
   /** ✅ NEW: charges for room + damage + extras */
   charges     BookingCharge[]
@@ -299,6 +308,43 @@ model Booking {
   @@index([unitId])
   @@index([tenantId, status])
   @@index([tenantId, guestId])
+  @@index([tenantId, status, checkIn, checkOut])
+  @@index([tenantId, checkIn])
+  @@index([tenantId, checkOut])
+  @@index([unitId, status, checkIn, checkOut])
+}
+
+model PreBooking {
+  id        String @id @default(uuid())
+  tenantId  String
+  guestId   String
+
+  guestName  String
+  guestEmail String?
+  guestPhone String?
+
+  plannedCheckIn  DateTime?
+  plannedCheckOut DateTime?
+
+  amountPaid Decimal @db.Decimal(12, 2)
+  currency   String  @default("NGN")
+  status     PreBookingStatus @default(PENDING)
+  notes      String?
+
+  convertedBookingId String? @unique
+  convertedAt        DateTime?
+  createdByUserId    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+  guest            Guest    @relation(fields: [guestId], references: [id])
+  convertedBooking Booking? @relation("PreBookingConvertedBooking", fields: [convertedBookingId], references: [id])
+
+  @@index([tenantId])
+  @@index([guestId])
+  @@index([tenantId, status])
 }
 
 model BookingVisitor {
@@ -353,6 +399,9 @@ model Payment {
 
   @@index([tenantId])
   @@index([bookingId])
+  @@index([tenantId, status, paidAt])
+  @@index([tenantId, bookingId, status])
+  @@index([tenantId, createdAt])
 }
 
 model BookingCharge {
@@ -375,6 +424,8 @@ model BookingCharge {
   @@index([tenantId])
   @@index([bookingId])
   @@index([bookingId, type])
+  @@index([tenantId, bookingId, status])
+  @@index([tenantId, status, type, createdAt])
 }
 
 model CheckEvent {
@@ -407,6 +458,7 @@ model CheckEvent {
 
   @@index([tenantId])
   @@index([bookingId])
+  @@index([tenantId, type, earlyCheckout, capturedAt])
 }
 
 model TenantSettings {
@@ -450,6 +502,7 @@ model Guest {
 
   tenant   Tenant  @relation(fields: [tenantId], references: [id])
   bookings Booking[]
+  preBookings PreBooking[]
 
   @@index([tenantId])
   @@index([tenantId, phone])

@@ -6,6 +6,7 @@ import { logger } from "../../common/logger/logger";
 import {
   sendAdminCheckInAlertEmail,
   sendAdminCheckOutAlertEmail,
+  sendGuestBillEmail,
   sendGuestCheckInEmail,
   sendGuestCheckOutEmail,
 } from "../../common/notifications/email";
@@ -53,6 +54,363 @@ function computeTotalBillFromBaseAndCharges(
   const roomComponent = roomCharges.length > 0 ? Math.max(roomTotal, base) : base;
 
   return Math.max(0, roomComponent + otherTotal);
+}
+
+function safeNumber(value: unknown) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return n;
+}
+
+function toMoney(n: number) {
+  return safeNumber(n).toFixed(2);
+}
+
+function formatDateDdMonYyyy(value: Date | string | null | undefined) {
+  if (!value) return "—";
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Africa/Lagos",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).formatToParts(d);
+  const day = parts.find((p) => p.type === "day")?.value ?? "—";
+  const month = (parts.find((p) => p.type === "month")?.value ?? "—").toUpperCase();
+  const year = parts.find((p) => p.type === "year")?.value ?? "—";
+  return `${day}-${month}-${year}`;
+}
+
+function bookingRefLast8(bookingId: string) {
+  return String(bookingId || "").slice(-8).toUpperCase();
+}
+
+function csvEscape(v: unknown) {
+  const s = String(v ?? "");
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function toCsv(rows: Array<Record<string, unknown>>, headers: string[]) {
+  const head = headers.join(",");
+  const body = rows.map((r) => headers.map((h) => csvEscape(r[h])).join(",")).join("\n");
+  return `${head}\n${body}\n`;
+}
+
+function xmlEscape(v: unknown) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function normalizeChargeTypeLabel(type: string, title: string | null | undefined) {
+  const t = String(type || "").toUpperCase();
+  if (t === "ROOM") return "Room";
+  if (t === "DAMAGE") return "Damage";
+  if (t === "PENALTY") return "Penalty";
+  if (t === "DISCOUNT") return "Discount";
+  if (t !== "EXTRA") return t || "Charge";
+
+  const rawTitle = String(title || "").trim().toLowerCase();
+  if (rawTitle.includes("restaurant")) return "Restaurant";
+  if (rawTitle.includes("laundry")) return "Laundry";
+  if (rawTitle.includes("bar")) return "Bar";
+  if (rawTitle.includes("overstay")) return "Overstay";
+  if (rawTitle.includes("stay extension")) return "Stay Extension";
+  return "Extra";
+}
+
+async function buildBookingBillPayload(req: Request, bookingId: string) {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const tenant = await db.raw.tenant.findUnique({
+    where: { id: tenantId },
+    select: { name: true },
+  });
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: {
+      id: true,
+      status: true,
+      paymentStatus: true,
+      guestName: true,
+      guestPhone: true,
+      guestEmail: true,
+      checkIn: true,
+      checkOut: true,
+      checkedInAt: true,
+      checkedOutAt: true,
+      totalAmount: true,
+      currency: true,
+      unit: {
+        select: {
+          name: true,
+          type: true,
+          property: { select: { name: true, address: true } },
+        },
+      },
+      charges: {
+        where: { status: "OPEN" },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          type: true,
+          title: true,
+          amount: true,
+          currency: true,
+          createdAt: true,
+        },
+      },
+      payments: {
+        where: { status: "CONFIRMED" },
+        orderBy: { paidAt: "asc" },
+        select: {
+          id: true,
+          amount: true,
+          currency: true,
+          method: true,
+          paidAt: true,
+          reference: true,
+        },
+      },
+    },
+  });
+
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+
+  const baseAmount = safeNumber(booking.totalAmount?.toString?.() ?? booking.totalAmount ?? 0);
+  const totalBill = computeTotalBillFromBaseAndCharges(baseAmount, booking.charges ?? []);
+  const paidTotal = (booking.payments ?? []).reduce(
+    (sum, p) => sum + safeNumber(p.amount?.toString?.() ?? p.amount ?? 0),
+    0
+  );
+  const balanceDue = Math.max(0, totalBill - paidTotal);
+
+  const charges = (booking.charges ?? []).map((c) => ({
+    id: c.id,
+    type: c.type,
+    typeLabel: normalizeChargeTypeLabel(c.type, c.title),
+    title: c.title ?? "",
+    amount: toMoney(safeNumber(c.amount?.toString?.() ?? c.amount ?? 0)),
+    currency: c.currency ?? booking.currency ?? "NGN",
+    createdAt: c.createdAt,
+  }));
+
+  const payments = (booking.payments ?? []).map((p) => ({
+    id: p.id,
+    amount: toMoney(safeNumber(p.amount?.toString?.() ?? p.amount ?? 0)),
+    currency: p.currency ?? booking.currency ?? "NGN",
+    method: p.method ?? "MANUAL",
+    paidAt: p.paidAt,
+    reference: p.reference ?? "",
+  }));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    booking: {
+      tenantName: tenant?.name ?? "",
+      id: booking.id,
+      reference: bookingRefLast8(booking.id),
+      status: booking.status,
+      paymentStatus: booking.paymentStatus,
+      guestName: booking.guestName ?? "",
+      guestPhone: booking.guestPhone ?? "",
+      guestEmail: booking.guestEmail ?? "",
+      propertyName: booking.unit?.property?.name ?? "",
+      propertyAddress: booking.unit?.property?.address ?? "",
+      unitName: booking.unit?.name ?? "",
+      unitType: booking.unit?.type ?? "",
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      checkedInAt: booking.checkedInAt,
+      checkedOutAt: booking.checkedOutAt,
+      currency: booking.currency ?? "NGN",
+      baseAmount: toMoney(baseAmount),
+    },
+    charges,
+    payments,
+    summary: {
+      totalBill: toMoney(totalBill),
+      paidTotal: toMoney(paidTotal),
+      balanceDue: toMoney(balanceDue),
+      currency: booking.currency ?? "NGN",
+    },
+  };
+}
+
+function billRowsForExport(bill: Awaited<ReturnType<typeof buildBookingBillPayload>>) {
+  const rows = bill.charges.length
+    ? bill.charges.map((c) => ({
+        GeneratedAt: bill.generatedAt,
+        BookingRef: bill.booking.reference,
+        BookingId: bill.booking.id,
+        GuestName: bill.booking.guestName,
+        Property: bill.booking.propertyName,
+        Unit: bill.booking.unitName,
+        CheckIn: bill.booking.checkIn,
+        CheckOut: bill.booking.checkOut,
+        Currency: bill.summary.currency,
+        LineType: c.typeLabel,
+        LineTitle: c.title,
+        LineDate: c.createdAt,
+        LineAmount: c.amount,
+        TotalBill: bill.summary.totalBill,
+        PaidTotal: bill.summary.paidTotal,
+        BalanceDue: bill.summary.balanceDue,
+      }))
+    : [
+        {
+          GeneratedAt: bill.generatedAt,
+          BookingRef: bill.booking.reference,
+          BookingId: bill.booking.id,
+          GuestName: bill.booking.guestName,
+          Property: bill.booking.propertyName,
+          Unit: bill.booking.unitName,
+          CheckIn: bill.booking.checkIn,
+          CheckOut: bill.booking.checkOut,
+          Currency: bill.summary.currency,
+          LineType: "",
+          LineTitle: "",
+          LineDate: "",
+          LineAmount: "0.00",
+          TotalBill: bill.summary.totalBill,
+          PaidTotal: bill.summary.paidTotal,
+          BalanceDue: bill.summary.balanceDue,
+        },
+      ];
+
+  return rows;
+}
+
+function buildExcelXml(rows: Array<Record<string, unknown>>, headers: string[]) {
+  const headerCells = headers
+    .map((h) => `<Cell><Data ss:Type="String">${xmlEscape(h)}</Data></Cell>`)
+    .join("");
+  const bodyRows = rows
+    .map((r) => {
+      const cells = headers
+        .map((h) => `<Cell><Data ss:Type="String">${xmlEscape(r[h] ?? "")}</Data></Cell>`)
+        .join("");
+      return `<Row>${cells}</Row>`;
+    })
+    .join("");
+
+  return `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+  <Worksheet ss:Name="Bill">
+    <Table>
+      <Row>${headerCells}</Row>
+      ${bodyRows}
+    </Table>
+  </Worksheet>
+</Workbook>`;
+}
+
+function pdfEscape(value: unknown) {
+  return String(value ?? "").replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+function generateSimpleBillPdfBuffer(lines: string[]) {
+  const contentLines: string[] = [];
+  let y = 800;
+  contentLines.push("BT");
+  contentLines.push("/F1 10 Tf");
+  contentLines.push("50 800 Td");
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = pdfEscape(lines[i]);
+    if (i > 0) {
+      y -= 14;
+      if (y < 40) break;
+      contentLines.push(`0 -14 Td`);
+    }
+    contentLines.push(`(${line}) Tj`);
+  }
+  contentLines.push("ET");
+
+  const stream = contentLines.join("\n");
+  const objects = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n",
+    "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n",
+    `5 0 obj\n<< /Length ${Buffer.byteLength(stream, "utf8")} >>\nstream\n${stream}\nendstream\nendobj\n`,
+  ];
+
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+  for (const obj of objects) {
+    offsets.push(Buffer.byteLength(pdf, "utf8"));
+    pdf += obj;
+  }
+  const xrefStart = Buffer.byteLength(pdf, "utf8");
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i < offsets.length; i += 1) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return Buffer.from(pdf, "utf8");
+}
+
+function buildBillPdfLines(bill: Awaited<ReturnType<typeof buildBookingBillPayload>>) {
+  const pad = (value: string, size: number) => {
+    if (value.length >= size) return value.slice(0, size);
+    return value.padEnd(size, " ");
+  };
+  const chargeHeader = `${pad("CATEGORY", 14)} ${pad("TITLE", 40)} ${pad("AMOUNT", 16)} ${pad("DATE", 12)}`;
+
+  const lines: string[] = [];
+  lines.push(`${bill.booking.tenantName || "Tenant"} Guest Bill Details`);
+  lines.push(`Generated: ${formatDateDdMonYyyy(bill.generatedAt)}`);
+  lines.push("");
+  lines.push(`Booking Ref: #${bill.booking.reference}`);
+  lines.push(`Booking ID: ${bill.booking.id}`);
+  lines.push(`Guest: ${bill.booking.guestName || "-"}`);
+  lines.push(`Property: ${bill.booking.propertyName || "-"}`);
+  lines.push(`Unit: ${bill.booking.unitName || "-"}`);
+  lines.push(`Check-in: ${formatDateDdMonYyyy(bill.booking.checkIn)} by 1:00pm`);
+  lines.push(`Check-out: ${formatDateDdMonYyyy(bill.booking.checkOut)} by 12:00noon`);
+  lines.push("");
+  lines.push("Charges:");
+  if (bill.charges.length === 0) {
+    lines.push("- No open charges");
+  } else {
+    lines.push(chargeHeader);
+    lines.push("-".repeat(chargeHeader.length));
+    for (const c of bill.charges) {
+      lines.push(
+        `${pad(c.typeLabel || "-", 14)} ${pad(c.title || "-", 40)} ${pad(`${c.amount} ${c.currency}`, 16)} ${pad(
+          formatDateDdMonYyyy(c.createdAt),
+          12
+        )}`
+      );
+    }
+  }
+  lines.push("");
+  lines.push("Payments:");
+  if (bill.payments.length === 0) {
+    lines.push("- No confirmed payments");
+  } else {
+    for (const p of bill.payments) {
+      lines.push(`- ${p.amount} ${p.currency} | ${p.method} | ${formatDateDdMonYyyy(p.paidAt)}`);
+    }
+  }
+  lines.push("");
+  lines.push(`Total Bill: ${bill.summary.totalBill} ${bill.summary.currency}`);
+  lines.push(`Paid Total: ${bill.summary.paidTotal} ${bill.summary.currency}`);
+  lines.push(`Balance Due: ${bill.summary.balanceDue} ${bill.summary.currency}`);
+  return lines;
 }
 
 /**
@@ -516,6 +874,153 @@ export const checkOut = asyncHandler(async (req: Request, res: Response) => {
 });
 
 /**
+ * BILL PREVIEW + EXPORT
+ */
+export const getBookingBillPreview = asyncHandler(async (req: Request, res: Response) => {
+  const { bookingId } = req.params;
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+
+  const bill = await buildBookingBillPayload(req, bookingId);
+  res.json({ bill });
+});
+
+export const exportBookingBillCsv = asyncHandler(async (req: Request, res: Response) => {
+  const { bookingId } = req.params;
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+
+  const bill = await buildBookingBillPayload(req, bookingId);
+  const rows = billRowsForExport(bill);
+  const headers = [
+    "GeneratedAt",
+    "BookingRef",
+    "BookingId",
+    "GuestName",
+    "Property",
+    "Unit",
+    "CheckIn",
+    "CheckOut",
+    "Currency",
+    "LineType",
+    "LineTitle",
+    "LineDate",
+    "LineAmount",
+    "TotalBill",
+    "PaidTotal",
+    "BalanceDue",
+  ];
+  const csv = toCsv(rows, headers);
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="bill_${bill.booking.reference}.csv"`
+  );
+  res.status(200).send(csv);
+});
+
+export const exportBookingBillPdf = asyncHandler(async (req: Request, res: Response) => {
+  const { bookingId } = req.params;
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+
+  const bill = await buildBookingBillPayload(req, bookingId);
+  const pdf = generateSimpleBillPdfBuffer(buildBillPdfLines(bill));
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="bill_${bill.booking.reference}.pdf"`
+  );
+  res.status(200).send(pdf);
+});
+
+export const exportBookingBillXlsx = asyncHandler(async (req: Request, res: Response) => {
+  const { bookingId } = req.params;
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+
+  const bill = await buildBookingBillPayload(req, bookingId);
+  const rows = billRowsForExport(bill);
+  const headers = [
+    "GeneratedAt",
+    "BookingRef",
+    "BookingId",
+    "GuestName",
+    "Property",
+    "Unit",
+    "CheckIn",
+    "CheckOut",
+    "Currency",
+    "LineType",
+    "LineTitle",
+    "LineDate",
+    "LineAmount",
+    "TotalBill",
+    "PaidTotal",
+    "BalanceDue",
+  ];
+  const xml = buildExcelXml(rows, headers);
+
+  res.setHeader("Content-Type", "application/vnd.ms-excel; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="bill_${bill.booking.reference}.xlsx"`
+  );
+  res.status(200).send(xml);
+});
+
+export const sendBookingBillToGuest = asyncHandler(async (req: Request, res: Response) => {
+  const { bookingId } = req.params;
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+
+  const bill = await buildBookingBillPayload(req, bookingId);
+  const to = String(req.body?.to || bill.booking.guestEmail || "").trim();
+  if (!to) {
+    throw new AppError(
+      "Guest email is not maintained for this booking. Update guest email before sending bill.",
+      400,
+      "GUEST_EMAIL_MISSING"
+    );
+  }
+
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const tenant = await db.raw.tenant.findUnique({
+    where: { id: tenantId },
+    select: { name: true },
+  });
+
+  const pdf = generateSimpleBillPdfBuffer(buildBillPdfLines(bill));
+  await sendGuestBillEmail({
+    to,
+    guestName: bill.booking.guestName,
+    bookingId: bill.booking.id,
+    tenantName: tenant?.name ?? null,
+    propertyName: bill.booking.propertyName,
+    unitName: bill.booking.unitName,
+    checkIn: bill.booking.checkIn,
+    checkOut: bill.booking.checkOut,
+    totalBill: bill.summary.totalBill,
+    paidTotal: bill.summary.paidTotal,
+    balanceDue: bill.summary.balanceDue,
+    currency: bill.summary.currency,
+    pdfBase64: pdf.toString("base64"),
+  });
+
+  logger.info(
+    {
+      event: "audit.bill_sent_to_guest",
+      requestId: req.requestId,
+      tenantId,
+      bookingId: bill.booking.id,
+      to,
+      actorUserId: (req as any).user?.userId ?? null,
+    },
+    "Audit bill sent to guest"
+  );
+
+  res.status(201).json({ ok: true, sentTo: to, bookingId: bill.booking.id });
+});
+
+/**
  * VISITOR LOG: list visitors for an in-house booking
  */
 export const listBookingVisitors = asyncHandler(async (req: Request, res: Response) => {
@@ -883,6 +1388,72 @@ export const addOverstayCharge = asyncHandler(async (req: Request, res: Response
       chargeId: charge.id,
     },
     "Audit overstay charge"
+  );
+
+  res.status(201).json({ charge });
+});
+
+/**
+ * MANUAL SERVICE CHARGE (Restaurant/Laundry/Bar/Other)
+ */
+export const addServiceCharge = asyncHandler(async (req: Request, res: Response) => {
+  const tenantId = req.tenantId!;
+  const db = prismaForTenant(tenantId);
+  const propertyScope = await resolvePropertyScope(req);
+  const { bookingId } = req.params;
+  const { amount, category, title, notes } = req.body ?? {};
+  if (!bookingId) throw new AppError("bookingId is required", 400, "VALIDATION_ERROR");
+
+  const parsedAmount = Number(amount ?? 0);
+  const normalizedAmount = Number.isFinite(parsedAmount) ? Math.max(0, parsedAmount) : 0;
+  if (normalizedAmount <= 0) {
+    throw new AppError("amount must be greater than 0", 400, "VALIDATION_ERROR");
+  }
+
+  const allowed = new Set(["RESTAURANT", "LAUNDRY", "BAR", "OTHER"]);
+  const normalizedCategory = String(category || "").trim().toUpperCase();
+  if (!allowed.has(normalizedCategory)) {
+    throw new AppError("category must be one of RESTAURANT, LAUNDRY, BAR, OTHER", 400, "VALIDATION_ERROR");
+  }
+
+  const booking = await db.raw.booking.findFirst({
+    where: { id: bookingId, tenantId, ...scopedBookingWhere(propertyScope) },
+    select: { id: true, status: true, currency: true },
+  });
+  if (!booking) throw new AppError("Booking not found", 404, "BOOKING_NOT_FOUND");
+  if (booking.status !== "CHECKED_IN") {
+    throw new AppError("Service charges can be added only for CHECKED_IN bookings", 409, "INVALID_BOOKING_STATE");
+  }
+
+  const customTitle = toOptionalString(title);
+  const baseTitle = customTitle || "Service charge";
+  const chargeTitle = `${normalizedCategory}: ${baseTitle}`;
+  const note = toOptionalString(notes);
+
+  const charge = await db.raw.bookingCharge.create({
+    data: {
+      tenantId,
+      bookingId,
+      type: "EXTRA",
+      title: note ? `${chargeTitle} (${note})` : chargeTitle,
+      amount: normalizedAmount.toFixed(2),
+      currency: booking.currency ?? "NGN",
+      status: "OPEN",
+    },
+  });
+
+  logger.info(
+    {
+      event: "audit.service_charge_added",
+      requestId: req.requestId,
+      tenantId,
+      bookingId,
+      chargeId: charge.id,
+      category: normalizedCategory,
+      amount: normalizedAmount,
+      notes: note,
+    },
+    "Audit service charge added"
   );
 
   res.status(201).json({ charge });

@@ -3,6 +3,9 @@ import { prisma } from "../../prisma/client";
 import { AppError } from "../../common/errors/AppError";
 import { resolvePropertyScope, scopedBookingWhere, scopedPaymentWhere, scopedPropertyWhere, scopedUnitWhere } from "../../common/authz/property-scope";
 
+const DASHBOARD_CACHE_TTL_MS = 10_000;
+const dashboardCache = new Map<string, { expiresAt: number; data: any }>();
+
 type Role = "ADMIN" | "MANAGER" | "STAFF";
 type JwtUser = { userId: string; tenantId: string; role: Role };
 
@@ -60,9 +63,14 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
     const paymentScope = { ...scope, ...scopedPaymentWhere(propertyScope) };
     const propertyWhere = { ...scope, ...scopedPropertyWhere(propertyScope) };
     const unitWhere = { ...scope, ...scopedUnitWhere(propertyScope) };
+    const cacheKey = [tenantId, user.userId, user.role].join("|");
+    const nowMs = Date.now();
+    const cached = dashboardCache.get(cacheKey);
+    if (cached && cached.expiresAt > nowMs) {
+      return res.json(cached.data);
+    }
 
-    // Recent bookings (all roles)
-    const bookingRows = await prisma.booking.findMany({
+    const recentBookingsPromise = prisma.booking.findMany({
       where: bookingScope,
       orderBy: { createdAt: "desc" },
       take: 5,
@@ -77,18 +85,7 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
       },
     });
 
-    const recentBookings = bookingRows.map((b) => ({
-      id: b.id,
-      guestName: b.guestName ?? "Guest",
-      propertyName: b.unit.property.name,
-      checkIn: b.checkIn.toISOString(),
-      checkOut: b.checkOut.toISOString(),
-      status: mapBookingStatusToUi(b.status),
-      amount: Number(b.totalAmount ?? 0),
-    }));
-
-    // Pending payments (all roles)
-    const paymentRows = await prisma.payment.findMany({
+    const pendingPaymentsPromise = prisma.payment.findMany({
       where: { ...paymentScope, status: "PENDING" },
       orderBy: { createdAt: "desc" },
       take: 5,
@@ -105,7 +102,43 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
       },
     });
 
+    const countsPromise = Promise.all([
+      prisma.property.count({ where: propertyWhere }),
+      prisma.unit.count({ where: unitWhere }),
+      prisma.booking.count({
+        where: { ...bookingScope, status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] } },
+      }),
+      prisma.payment.count({ where: { ...paymentScope, status: "PENDING" } }),
+    ]);
+
     const now = new Date();
+    const startOfToday = getStartOfDay(now);
+    const endOfToday = getEndOfDay(now);
+    const occupiedTodayPromise = prisma.booking.findMany({
+      where: {
+        ...scope,
+        ...scopedBookingWhere(propertyScope),
+        status: { in: ["CONFIRMED", "CHECKED_IN"] },
+        checkIn: { lte: endOfToday },
+        checkOut: { gt: startOfToday },
+      },
+      select: { unitId: true },
+      distinct: ["unitId"],
+    });
+
+    const [bookingRows, paymentRows, [totalProperties, totalUnits, activeBookings, pendingPaymentsCount], occupiedToday] =
+      await Promise.all([recentBookingsPromise, pendingPaymentsPromise, countsPromise, occupiedTodayPromise]);
+
+    const recentBookings = bookingRows.map((b) => ({
+      id: b.id,
+      guestName: b.guestName ?? "Guest",
+      propertyName: b.unit.property.name,
+      checkIn: b.checkIn.toISOString(),
+      checkOut: b.checkOut.toISOString(),
+      status: mapBookingStatusToUi(b.status),
+      amount: Number(b.totalAmount ?? 0),
+    }));
+
     const pendingPayments = paymentRows.map((p) => {
       // No dueDate in schema; using booking.checkIn as placeholder.
       const due = p.booking.checkIn;
@@ -119,32 +152,6 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
         dueDate: due.toISOString(),
         status: overdue ? "overdue" : "pending",
       };
-    });
-
-    // Core operational stats (all roles)
-    const [totalProperties, totalUnits, activeBookings, pendingPaymentsCount] = await Promise.all([
-      prisma.property.count({ where: propertyWhere }),
-      prisma.unit.count({ where: unitWhere }),
-      prisma.booking.count({
-        where: { ...bookingScope, status: { in: ["PENDING", "CONFIRMED", "CHECKED_IN"] } },
-      }),
-      prisma.payment.count({ where: { ...paymentScope, status: "PENDING" } }),
-    ]);
-
-    // Occupancy from active stays today (distinct unitId)
-    const startOfToday = getStartOfDay(now);
-    const endOfToday = getEndOfDay(now);
-
-    const occupiedToday = await prisma.booking.findMany({
-      where: {
-        ...scope,
-        ...scopedBookingWhere(propertyScope),
-        status: { in: ["CONFIRMED", "CHECKED_IN"] },
-        checkIn: { lte: endOfToday },
-        checkOut: { gt: startOfToday },
-      },
-      select: { unitId: true },
-      distinct: ["unitId"],
     });
 
     const occupiedUnitsToday = occupiedToday.length;
@@ -167,12 +174,14 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
         occupancyRate,
       };
 
-      return res.json({
+      const payload = {
         userRole: "staff",
         stats,
         recentBookings,
         pendingPayments,
-      });
+      };
+      dashboardCache.set(cacheKey, { expiresAt: nowMs + DASHBOARD_CACHE_TTL_MS, data: payload });
+      return res.json(payload);
     }
 
     // MANAGER: operational + finance-lite (no team size)
@@ -186,12 +195,14 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
         occupancyRate,
       };
 
-      return res.json({
+      const payload = {
         userRole: "manager",
         stats,
         recentBookings,
         pendingPayments,
-      });
+      };
+      dashboardCache.set(cacheKey, { expiresAt: nowMs + DASHBOARD_CACHE_TTL_MS, data: payload });
+      return res.json(payload);
     }
 
     // ADMIN: full visibility
@@ -212,13 +223,15 @@ export async function getDashboard(req: Request, res: Response, next: NextFuncti
       occupancyRate,
     };
 
-    return res.json({
+    const payload = {
       userRole: "admin",
       stats,
       recentBookings,
       pendingPayments,
       staffCount,
-    });
+    };
+    dashboardCache.set(cacheKey, { expiresAt: nowMs + DASHBOARD_CACHE_TTL_MS, data: payload });
+    return res.json(payload);
   } catch (err) {
     next(err);
   }

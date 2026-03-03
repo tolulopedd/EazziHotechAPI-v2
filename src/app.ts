@@ -23,6 +23,7 @@ import { reportsRoutes } from "./modules/reports/reports.routes";
 import { guestRoutes } from "./modules/guests/guest.routes";
 import { leadsRoutes } from "./modules/leads/leads.routes";
 import { newsRoutes } from "./modules/news/news.routes";
+import { preBookingRoutes } from "./modules/prebookings/prebooking.routes";
 
 
 // ✅ NEW: public routes (tenant discovery)
@@ -68,6 +69,7 @@ app.use(
   app.use("/api", propertyRoutes);
   app.use("/api", unitRoutes);
   app.use("/api", bookingRoutes);
+  app.use("/api", preBookingRoutes);
   app.use("/api", paymentRoutes);
   app.use("/api", checkRoutes);
   app.use("/api", reportsRoutes);

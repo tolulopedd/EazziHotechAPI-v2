@@ -3,6 +3,12 @@ import {
   addBookingVisitor,
   extendStay,
   addOverstayCharge,
+  addServiceCharge,
+  exportBookingBillCsv,
+  exportBookingBillPdf,
+  exportBookingBillXlsx,
+  getBookingBillPreview,
+  sendBookingBillToGuest,
   checkIn,
   checkOut,
   checkoutBookingVisitor,
@@ -40,6 +46,48 @@ checkRoutes.post(
   requireAuth,
   requireRole("ADMIN", "MANAGER", "STAFF"),
   addOverstayCharge
+);
+
+checkRoutes.post(
+  "/bookings/:bookingId/service-charge",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  addServiceCharge
+);
+
+checkRoutes.get(
+  "/bookings/:bookingId/bill",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  getBookingBillPreview
+);
+
+checkRoutes.get(
+  "/bookings/:bookingId/bill.csv",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  exportBookingBillCsv
+);
+
+checkRoutes.get(
+  "/bookings/:bookingId/bill.pdf",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  exportBookingBillPdf
+);
+
+checkRoutes.get(
+  "/bookings/:bookingId/bill.xlsx",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  exportBookingBillXlsx
+);
+
+checkRoutes.post(
+  "/bookings/:bookingId/bill/send",
+  requireAuth,
+  requireRole("ADMIN", "MANAGER", "STAFF"),
+  sendBookingBillToGuest
 );
 
 checkRoutes.get(
