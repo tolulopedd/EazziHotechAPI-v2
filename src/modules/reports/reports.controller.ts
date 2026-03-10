@@ -471,44 +471,6 @@ async function buildBookingsPaymentsReport(req: Request) {
     select: { unitId: true, checkIn: true, checkOut: true },
   });
 
-  const occupancyByUnit = new Map<string, Array<{ start: number; end: number }>>();
-  for (const b of occupancyBookings) {
-    const start = new Date(b.checkIn);
-    const end = new Date(b.checkOut);
-    start.setHours(0, 0, 0, 0);
-    end.setHours(0, 0, 0, 0);
-    const item = { start: start.getTime(), end: end.getTime() };
-    const list = occupancyByUnit.get(b.unitId) ?? [];
-    list.push(item);
-    occupancyByUnit.set(b.unitId, list);
-  }
-
-  const occupancyRows: Array<{
-    date: string;
-    room: string;
-    propertyName: string;
-    status: "OCCUPIED" | "NOT_OCCUPIED";
-  }> = [];
-  for (let day = new Date(occupancyFrom); day <= occupancyTo; day = addDays(day, 1)) {
-    const dayStart = new Date(day);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = addDays(dayStart, 1);
-    const dayStartMs = dayStart.getTime();
-    const dayEndMs = dayEnd.getTime();
-    const dayIso = isoDay(dayStart);
-
-    for (const u of units) {
-      const intervals = occupancyByUnit.get(u.id) ?? [];
-      const isOccupied = intervals.some((r) => r.start < dayEndMs && r.end > dayStartMs);
-      occupancyRows.push({
-        date: dayIso,
-        room: u.name,
-        propertyName: u.property?.name ?? "",
-        status: isOccupied ? "OCCUPIED" : "NOT_OCCUPIED",
-      });
-    }
-  }
-
   const topOutstanding = bookings
     .map((b) => {
       const totalBill = computeTotalBillFromBaseAndCharges(
@@ -680,6 +642,44 @@ async function buildBookingsPaymentsReport(req: Request) {
     occupiedUnitsRowsPromise,
     damageChargesPromise,
   ]);
+
+  const occupancyByUnit = new Map<string, Array<{ start: number; end: number }>>();
+  for (const b of occupancyBookings) {
+    const start = new Date(b.checkIn);
+    const end = new Date(b.checkOut);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(0, 0, 0, 0);
+    const item = { start: start.getTime(), end: end.getTime() };
+    const list = occupancyByUnit.get(b.unitId) ?? [];
+    list.push(item);
+    occupancyByUnit.set(b.unitId, list);
+  }
+
+  const occupancyRows: Array<{
+    date: string;
+    room: string;
+    propertyName: string;
+    status: "OCCUPIED" | "NOT_OCCUPIED";
+  }> = [];
+  for (let day = new Date(occupancyFrom); day <= occupancyTo; day = addDays(day, 1)) {
+    const dayStart = new Date(day);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = addDays(dayStart, 1);
+    const dayStartMs = dayStart.getTime();
+    const dayEndMs = dayEnd.getTime();
+    const dayIso = isoDay(dayStart);
+
+    for (const u of units) {
+      const intervals = occupancyByUnit.get(u.id) ?? [];
+      const isOccupied = intervals.some((r) => r.start < dayEndMs && r.end > dayStartMs);
+      occupancyRows.push({
+        date: dayIso,
+        room: u.name,
+        propertyName: u.property?.name ?? "",
+        status: isOccupied ? "OCCUPIED" : "NOT_OCCUPIED",
+      });
+    }
+  }
   const occupiedUnits = occupiedUnitsRows.length;
   const occupancyRate = totalUnits > 0 ? (occupiedUnits / totalUnits) * 100 : 0;
 
