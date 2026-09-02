@@ -514,11 +514,23 @@ model Lead {
   id          String     @id @default(uuid())
   companyName String
   contactName String
-  email       String
+  email       String?
   phone       String?
   businessType String?
   message     String?
   source      String?
+  sourceUrl   String?
+  contactSourceUrl String?
+  leadType    String     @default("INBOUND")
+  state       String?
+  city        String?
+  address     String?
+  roomCount   Int?
+  verificationStatus String @default("NOT_REQUIRED")
+  contactVerifiedAt DateTime?
+  lastActivityAt DateTime?
+  introEmailSentAt DateTime?
+  introEmailSubject String?
   ip          String?
   status      LeadStatus @default(NEW)
   assignedTo  String?
@@ -531,6 +543,9 @@ model Lead {
   @@index([status])
   @@index([createdAt])
   @@index([email])
+  @@index([leadType, status])
+  @@index([state, city])
+  @@index([source])
 }
 
 model NewsItem {

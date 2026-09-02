@@ -1,0 +1,261 @@
+export type HotelsNgProspect = {
+  companyName: string;
+  businessType: "HOTEL" | "SHORTLET";
+  state: "Lagos" | "Ogun";
+  city: string;
+  address: string;
+  roomCount: number;
+  sourceUrl: string;
+  contact?: {
+    email?: string;
+    phone?: string;
+    sourceUrl: string;
+  };
+};
+
+// These are a small, reviewed starting batch. Room counts are the values shown
+// on the Hotels.ng profile and must be confirmed with the property before sales
+// qualification because directory profiles may be stale.
+export const hotelsNgProspects: HotelsNgProspect[] = [
+  {
+    companyName: "Organico House Hotel",
+    businessType: "HOTEL",
+    state: "Lagos",
+    city: "Ajao Estate",
+    address: "International Airport Road, behind Conoil Filling Station, Ajao Estate, Lagos",
+    roomCount: 2,
+    sourceUrl: "https://hotels.ng/hotel/13933-organico-house-hotel-lagos",
+  },
+  {
+    companyName: "Baylis Suites",
+    businessType: "HOTEL",
+    state: "Lagos",
+    city: "Ikeja",
+    address: "58 Toyin Street, Ikeja, Lagos",
+    roomCount: 5,
+    sourceUrl: "https://hotels.ng/hotel/62571-bays-suites-lagos",
+  },
+  {
+    companyName: "RT 24 Hotel",
+    businessType: "HOTEL",
+    state: "Lagos",
+    city: "Ikeja",
+    address: "24 Abiodun Sobajo Street, Agidingbi, Ikeja, Lagos",
+    roomCount: 2,
+    sourceUrl: "https://hotels.ng/hotel/995689-rt-24-hotel-lagos",
+    contact: {
+      email: "reservations@rt24hotel.com",
+      phone: "+234 810 139 9988",
+      sourceUrl: "https://www.finelib.com/listing/RT-24-Hotel/27475",
+    },
+  },
+  {
+    companyName: "Jeromes Garden and Suites",
+    businessType: "HOTEL",
+    state: "Lagos",
+    city: "Ikeja",
+    address: "29 Oroleye Crescent, off Salvation Road, Opebi, Ikeja, Lagos",
+    roomCount: 5,
+    sourceUrl: "https://hotels.ng/hotel/89877-jeromes-garden-and-suites-lagos",
+    contact: {
+      email: "info@jeromegardenandsuitesng.com",
+      phone: "+234 817 249 0640",
+      sourceUrl: "https://jeromegardenandsuitesng.com/contact-us/",
+    },
+  },
+  {
+    companyName: "NO 95 Suites",
+    businessType: "HOTEL",
+    state: "Lagos",
+    city: "Lekki",
+    address: "95 Omorinre Johnson Street, Lekki, Lagos",
+    roomCount: 5,
+    sourceUrl: "https://hotels.ng/hotel/82456-no-95-suites-lagos",
+  },
+  {
+    companyName: "Zino Hotel International",
+    businessType: "HOTEL",
+    state: "Lagos",
+    city: "Badagry",
+    address: "42 Alhaji Sinatu Street, Agbara Bus Stop, Badagry Expressway, Lagos",
+    roomCount: 2,
+    sourceUrl: "https://hotels.ng/hotel/49658-zino-hotel-international-lagos",
+  },
+  {
+    companyName: "POSH Apartment and Hotel Omole",
+    businessType: "SHORTLET",
+    state: "Lagos",
+    city: "Ojodu",
+    address: "300B Omotunde Akinsola Crescent, Omole Phase 1, Lagos",
+    roomCount: 5,
+    sourceUrl: "https://hotels.ng/hotel/1001926-posh-apartments-lagos",
+  },
+  {
+    companyName: "Iconic Shortlets",
+    businessType: "SHORTLET",
+    state: "Lagos",
+    city: "Victoria Island",
+    address: "1 Adebisi Omotola Close, Victoria Island, Lagos",
+    roomCount: 2,
+    sourceUrl: "https://hotels.ng/hotel/1470841-iconic-shortlets",
+  },
+  {
+    companyName: "Sugarland Shortlet Apartment",
+    businessType: "SHORTLET",
+    state: "Lagos",
+    city: "Ikoyi",
+    address: "17 Alade Odunewu Street, Parkview Estate, Ikoyi, Lagos",
+    roomCount: 1,
+    sourceUrl: "https://hotels.ng/hotel/1005101-sugarland-shortlet-apartment-2-lagos",
+  },
+  {
+    companyName: "Idado Estate Shortlet Apartment",
+    businessType: "SHORTLET",
+    state: "Lagos",
+    city: "Lekki",
+    address: "10 Towobola Close, off Adebisi Oyenola Street, Idado Estate, Lekki, Lagos",
+    roomCount: 5,
+    sourceUrl: "https://hotels.ng/hotel/1438146-idado-estate-shortlet-apartment",
+  },
+  {
+    companyName: "Piccadilly Suites",
+    businessType: "SHORTLET",
+    state: "Lagos",
+    city: "Lekki",
+    address: "3 Piccadilly Street, Agungi, Lekki, Lagos",
+    roomCount: 11,
+    sourceUrl: "https://hotels.ng/hotel/55752-piccadilly-suites-lagos",
+    contact: {
+      email: "info@piccadillysuites.com",
+      phone: "+234 806 279 8505",
+      sourceUrl: "https://forefrontng.com/piccadilly-suites-wears-new-look-reopens-for-peerless-hospitality-in-lekki/",
+    },
+  },
+  {
+    companyName: "Milano Signature Apartments",
+    businessType: "SHORTLET",
+    state: "Lagos",
+    city: "Magodo",
+    address: "16 Olabisi Street, off Association Road, Shangisha, Magodo, Lagos",
+    roomCount: 5,
+    sourceUrl: "https://hotels.ng/hotel/hn480137s-milano-signature-apartments",
+    contact: {
+      email: "milanosignatures@gmail.com",
+      phone: "+234 707 491 9860",
+      sourceUrl: "https://milanosignatures.com/apartments/",
+    },
+  },
+  {
+    companyName: "Days Inn Hotel Apartments",
+    businessType: "SHORTLET",
+    state: "Lagos",
+    city: "Surulere",
+    address: "61 Tafawa Balewa Crescent, off Adeniran Ogunsanya Street, Surulere, Lagos",
+    roomCount: 3,
+    sourceUrl: "https://hotels.ng/hotel/hn581693s-days-inn-hotel-apartments",
+  },
+  {
+    companyName: "The Gilgal Apartments",
+    businessType: "SHORTLET",
+    state: "Lagos",
+    city: "Lekki Phase 1",
+    address: "Lekki Phase 1, Lagos",
+    roomCount: 2,
+    sourceUrl: "https://hotels.ng/hotel/1240233-the-gilgal-apartments",
+    contact: {
+      email: "info@gilgalproperties.com",
+      phone: "+234 805 507 2227",
+      sourceUrl: "https://www.gilgalproperties.com/",
+    },
+  },
+  {
+    companyName: "Dominion Hotel Limited",
+    businessType: "HOTEL",
+    state: "Ogun",
+    city: "Ago Iwoye",
+    address: "Igan Quarters, Obafemi Awolowo Road, Ago Iwoye, Ogun",
+    roomCount: 3,
+    sourceUrl: "https://hotels.ng/hotel/35937-dominion-hotel-ogun",
+    contact: {
+      phone: "+234 810 820 7769",
+      sourceUrl: "https://www.finelib.com/listing/Dominion-Hotel-Limited/56599/",
+    },
+  },
+  {
+    companyName: "Bolfat Hotels Limited",
+    businessType: "HOTEL",
+    state: "Ogun",
+    city: "Ijoko",
+    address: "Oyekunle Ajibade Street, Ijoko, Ogun",
+    roomCount: 2,
+    sourceUrl: "https://hotels.ng/hotel/73584-bolfat-hotels-limited-ogun",
+  },
+  {
+    companyName: "Ask Hotels",
+    businessType: "HOTEL",
+    state: "Ogun",
+    city: "Sango",
+    address: "42 Ogundemi Street, Ijoko, Sango, Ogun",
+    roomCount: 2,
+    sourceUrl: "https://hotels.ng/hotel/14391-ask-hotels-ogun",
+  },
+  {
+    companyName: "Adfak Hotel",
+    businessType: "HOTEL",
+    state: "Ogun",
+    city: "Ifo",
+    address: "72 Lagos-Abeokuta Expressway, Abekoko, Ifo, Ogun",
+    roomCount: 3,
+    sourceUrl: "https://hotels.ng/hotel/13163-adfak-hotel-ogun",
+  },
+  {
+    companyName: "Adeben's Place Hotel and Suites",
+    businessType: "HOTEL",
+    state: "Ogun",
+    city: "Ijebu Ode",
+    address: "1 Shola Ismail Crescent, off Odubona Avenue, Ijebu Ode, Ogun",
+    roomCount: 6,
+    sourceUrl: "https://hotels.ng/hotel/999538-adebens-place-hotel-and-suites-ogun",
+    contact: {
+      phone: "+234 803 448 9617",
+      sourceUrl: "https://ngex.com/bd/areas/Nigeria/Ogun/Ijebu%20Ode/c/Travel%20%26%20Tourism/Hotels%20And%20Guest%20Houses/",
+    },
+  },
+  {
+    companyName: "Leksokky Hotel",
+    businessType: "HOTEL",
+    state: "Ogun",
+    city: "Ota",
+    address: "Behind MRS Filling Station, Ijoko Road, Sango Ota, Ogun",
+    roomCount: 12,
+    sourceUrl: "https://hotels.ng/hotel/82643-leksokky-hotel-suites-ogun",
+    contact: {
+      email: "info@leksokkyhotel.com",
+      phone: "+234 802 673 1928",
+      sourceUrl: "https://leksokkyhotel.com/contact-us/",
+    },
+  },
+  {
+    companyName: "Oklarsus Hotel and Suite",
+    businessType: "HOTEL",
+    state: "Ogun",
+    city: "Sango Ota",
+    address: "Ewupe Road, Akoshile Street, by Singer Bus Stop, Sango Ota, Ogun",
+    roomCount: 5,
+    sourceUrl: "https://hotels.ng/hotel/1006599-oklarsus-hotel-and-suite-ogun",
+  },
+  {
+    companyName: "Upright Hotel",
+    businessType: "HOTEL",
+    state: "Ogun",
+    city: "Abeokuta",
+    address: "14/18 Demola Olanrewaju Street, Agbeloba Roundabout, Abeokuta, Ogun",
+    roomCount: 7,
+    sourceUrl: "https://hotels.ng/hotel/66992-upright-hotel-suites-ogun",
+    contact: {
+      email: "uprighthotelabeokuta@gmail.com",
+      phone: "+234 806 553 8871",
+      sourceUrl: "https://www.finelib.com/listing/Upright-Hotel--Suites/72052",
+    },
+  },
+];

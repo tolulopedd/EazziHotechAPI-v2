@@ -66,6 +66,15 @@ type SendGuestBillEmailInput = {
   pdfBase64?: string | null;
 };
 
+type SendLeadIntroductionEmailInput = {
+  to: string;
+  companyName: string;
+  contactName?: string | null;
+  businessType?: string | null;
+  city?: string | null;
+  state?: string | null;
+};
+
 function normalizeEmailFrom(value: string | undefined, appName: string) {
   const raw = (value || "").trim().replace(/^['"]|['"]$/g, "");
   if (!raw) return `${appName} <onboarding@resend.dev>`;
@@ -208,6 +217,52 @@ async function sendEmailMessage(input: {
   }
 
   console.log(input.consoleFallback);
+}
+
+export function isResendEmailConfigured() {
+  return (process.env.EMAIL_PROVIDER || "CONSOLE").trim().toUpperCase() === "RESEND" && Boolean(process.env.RESEND_API_KEY?.trim());
+}
+
+export function buildLeadIntroductionEmail(input: SendLeadIntroductionEmailInput) {
+  const appName = process.env.APP_NAME || "EazziHotech";
+  const companyName = input.companyName.trim() || "your hospitality business";
+  const contactName = input.contactName?.trim() || "Management Team";
+  const location = [input.city, input.state].filter(Boolean).join(", ");
+  const appUrl = (process.env.PUBLIC_APP_URL || "https://app.eazzihotech.com").trim();
+  const replyEmail = "tolulope.davids@eazzihotech.com";
+  const interestMailto = `mailto:${replyEmail}?subject=${encodeURIComponent(`I am interested in EazziHotech - ${companyName}`)}`;
+  const subject = `${appName}: 90 Days Free Access for ${companyName}`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;color:#111827;line-height:1.6;max-width:640px;margin:0 auto;">
+      <p>Dear ${escapeHtml(contactName)},</p>
+      <p>I am reaching out from <b>${escapeHtml(appName)}</b>, a hotel management solution designed to help hotels and short-let operators simplify their day-to-day operations and reduce dependence on manual processes.</p>
+      <p>We identified <b>${escapeHtml(companyName)}${location ? ` in ${escapeHtml(location)}` : ""}</b>, and believe ${escapeHtml(appName)} could help your team manage operations more efficiently as your business grows.</p>
+      <p>We would like to offer your hotel <b>90 days of free access to ${escapeHtml(appName)}, with no obligation to continue</b>. During the 90 days, your team can use the system in your actual operations. If you find it valuable, you can subscribe afterwards. If not, you can simply stop using it.</p>
+      <p><b>With ${escapeHtml(appName)}, your team can:</b></p>
+      <ul>
+        <li>Manage reservations, room availability, stay extensions, check-ins and check-outs from one system.</li>
+        <li>Track guest payments, outstanding balances, damages and additional service charges.</li>
+        <li>Maintain proper guest records, including photo capture during check-in.</li>
+        <li>Automatically send email notifications to guests and hotel management for bookings and payments.</li>
+        <li>Access clear operational and financial reports for better management oversight.</li>
+        <li>Improve staff accountability by keeping activities and transactions properly recorded.</li>
+      </ul>
+      <p>Our goal is simple: <b>help you run your hotel with better control, fewer manual processes, and clearer visibility into your operations.</b></p>
+      <p>We would be happy to give you a short demonstration and help set up ${escapeHtml(appName)} for your property.</p>
+      <p><a href="${escapeHtml(interestMailto)}" style="display:inline-block;background:#4f46e5;color:#ffffff;padding:11px 16px;border-radius:6px;text-decoration:none;font-weight:600;">Yes, I’m interested</a></p>
+      <p><b>Explore ${escapeHtml(appName)}:</b><br/><a href="${escapeHtml(appUrl)}">${escapeHtml(appUrl)}</a></p>
+      <p>Kind regards,<br/>Tolulope Davids</p>
+      <p><b>${escapeHtml(appName)}</b><br/>${escapeHtml(replyEmail)}<br/>info@eazzihotech.com<br/>+234-905-2222-022</p>
+      <p style="font-size:12px;color:#6b7280;">You are receiving this one-time introduction because your business is publicly listed as a hospitality provider. If this is not relevant to you, simply reply “Unsubscribe” and we will not contact you again.</p>
+    </div>
+  `;
+  return { subject, html, consoleFallback: `[email] Lead introduction for ${input.to} (${companyName})` };
+}
+
+export async function sendLeadIntroductionEmail(input: SendLeadIntroductionEmailInput) {
+  const message = buildLeadIntroductionEmail(input);
+  await sendEmailMessage({ to: input.to, ...message });
+  return message;
 }
 
 export async function sendPasswordResetEmail(input: SendPasswordResetEmailInput) {
